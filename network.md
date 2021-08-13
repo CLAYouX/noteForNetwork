@@ -470,7 +470,7 @@ TCP 断开连接是通过 **四次挥⼿** ⽅式。
 
 `TIME_WAIT` 等待 2 倍的 `MSL`，⽐较合理的解释是： 可以保证在两个传输方向上的尚未接收到或者迟到的报文段已经消失，否则如果服务器立即重启，可能会收到来自上一个进程迟到的数据，但是这种数据很可能是错误的，同时也是在理论上保证最后一个报文可靠到达，假设最后一个 `ACK` 丢失，那么服务器会再重发一个 `FIN`，这是虽然客户端的进程不在了，但是 TCP 连接还在，仍然可以重发 `LAST_ACK`。
 
-==2MSL== 的时间是从客户端接收到 ==FIN 报文== 后发送 ==ACK 应答报文== 开始计时的。如果在 `TIME-WAIT` 时间内，因为客户端的 ==ACK 应答报文== 没有传输到服务端，客户端⼜接收到了服务端重发的 ==FIN 报文== 报⽂，那么 2MSL 时间将重新计时。
+==2MSL== 的时间是从客户端接收到 ==FIN 报文== 后发送 ==ACK 应答报文== 开始计时的。**如果在 `TIME-WAIT` 时间内，因为客户端的 ==ACK 应答报文== 没有传输到服务端，客户端⼜接收到了服务端重发的 ==FIN 报文== ，那么 2MSL 时间将 重新计时**。
 
 在 Linux 系统⾥ ==2MSL==  默认是 60 秒，那么⼀个 MSL 也就是 30 秒。
 
@@ -532,68 +532,20 @@ TCP 有⼀个 **保活机制**，用于处理这种情况：定义⼀个时间�
 - 对端程序崩溃并重启。当 TCP 保活的探测报⽂发送给对端后，对端是可以响应的，但由于没有该连接的有效信息，会产⽣⼀个 ==RST 报⽂==，这样很快就会发现 TCP 连接已经被重置。
 - 对端程序崩溃，或对端由于其他原因导致报⽂不可达。当 TCP 保活的探测报⽂发送给对端后，⽯沉⼤海，没有响应，连续⼏次，达到保活探测次数后，TCP 会报告该 TCP 连接已经死亡。
 
-#### 4、Socket 编程
+##### TCP 状态流转图：
 
-##### TCP Socket 编程
+![TCP 状态流转图.png](https://i.loli.net/2021/08/13/ieDIul6X4yJOHZx.png)
 
-![TCP_socket.PNG](https://i.loli.net/2021/08/05/1Gj7JDBFmz3o5YO.png)
-
-- 服务端和客户端初始化 `socket`，得到文件描述符；
-- 服务端调用 `bind`，将绑定在 IP 地址和端口；
-- 服务端调用 `listen`，进行监听；
-- 服务端调用 `accept`，等待客户端连接；
-- 客户端调用 `connect`，向服务器端的地址和端口发起连接请求；
-- 服务端 `accept` 返回用于传输的 `socket` 的文件描述符；
-- 客户端调用 `write` 写入数据；服务端调用 `read` 读取数据；
-- 客户端断开连接时，会调用 `close`，那么服务端 `read` 读取数据时，就会读取到 ==EOF==，待处理完数据后，服务端调用 `close`，表示连接关闭。
-
-服务端调⽤ `accept` 时，连接成功了会返回⼀个 **已完成连接的** `socket`，后续⽤来传输数据。
-
-即监听的 `socket` 和真正用来传送数据的 `socket`，是两个 `socket`，一个叫作 **监听** `socket`，一个叫作 **已完成连接的** `socket`。
-
-##### listen 时参数 backlog 的意义
-
-Linux 内核会维护两个队列：
-
-- 未完成连接队列（SYN 队列）：接收到⼀个 SYN 建⽴连接请求，处于 `SYN_RCVD` 状态；
-
-- 已完成连接队列（Accept 队列）：已完成 TCP 三次握⼿过程，处于 `ESTABLISHED` 状态.
-
-<img src="https://i.loli.net/2021/08/09/8Y2bp5gHMF67uDv.png" alt="内核队列.PNG" style="zoom:80%;" />
-
-``` c
-int listen(int socketfd, int backlog)
-```
-
-- `socketfd` 为文件描述符
-- `backlog` 参数在历史版本中有一定的变化
-
-现在通常认为 `backlog` 是 `accept` 队列。
-
-##### accept 发生在三次握手的哪一步
-
-<img src="C:\Users\10295\AppData\Roaming\Typora\typora-user-images\image-20210809143213836.png" alt="image-20210809143213836" style="zoom:80%;" />
-
-- 客户端的协议栈向服务器端发送了 ==SYN 包==，并告诉服务器端当前发送序列号 `client_isn`，客户端进⼊`SYN_SENT` 状态；
-- 服务器端的协议栈收到这个包之后，进⾏ ==ACK 应答==，应答的值为 `client_isn+1`，表示对 SYN 包 `client_isn `的确认，同时服务器也发送⼀个 ==SYN 包==，告诉客户端当前我的发送序列号为 `server_isn`，服务器端进⼊ `SYN_RCVD` 状态;
-- 客户端协议栈收到 ACK 之后，使得应⽤程序从 `connect` 调⽤返回，表示客户端到服务器端的单向连接建⽴成功，客户端的状态为 `ESTABLISHED`，同时客户端协议栈也会对服务器端的 SYN 包进⾏应答，应答数据为`server_isn+1`；
-
-- 应答包到达服务器端后，服务器端协议栈使得 `accept` 阻塞调⽤返回，这个时候服务器端到客户端的单向连接也建⽴成功，服务器端也进⼊ `ESTABLISHED` 状态。
-
-由上图可知，客户端 `connect` 成功返回是在 **第⼆次握⼿**，服务端 `accept` 成功返回是在 **三次握⼿成功** 之后。
-
-##### 客户端调用 close 
-
-<img src="https://i.loli.net/2021/08/09/CEUMOJcv9ixbedB.png" alt="socket编程四次挥手.PNG" style="zoom:80%;" />
-
-- 客户端调⽤ `close`，表明客户端没有数据需要发送了，则此时会向服务端发送 ==FIN 报⽂==，进⼊ `FIN_WAIT_1`状态；
-
-- 服务端接收到了 ==FIN 报⽂==，TCP 协议栈会为 FIN 包插⼊⼀个⽂件结束符 EOF 到接收缓冲区中，应⽤程序可以通过 read 调⽤来感知这个 FIN 包。这个 **EOF 会被放在已排队等候的其他已接收的数据之后**，这就意味着服务端需要处理这种异常情况，因为 EOF 表示在该连接上再⽆额外数据到达。此时，服务端进⼊ `CLOSE_WAIT `状态；
-
-- 当处理完数据后，⾃然就会读到 EOF ，于是也调⽤ `close` 关闭它的套接字，这会使得客户端会发出⼀个 ==FIN 报文==，之后处于 `LAST_ACK` 状态；
-- 客户端接收到服务端的 FIN 包，并发送 ==ACK 确认包== 给服务端，此时客户端将进⼊ `TIME_WAIT` 状态；
-- 服务端收到 ==ACK 确认包== 后，就进⼊了最后的 `CLOSE` 状态；
-- 客户端经过 ==2MSL== 时间之后，也进⼊ `CLOSE` 状态。
+- **CLOSED**：初始状态；
+- **LISTEN**：服务器端的某个 `socket` 处于监听状态，可以接受连接；
+- **SYN_SEND**：
+- **SYN_RCVD**：
+- **FIN_WAIT_1**：已经建立连接后，其中一方主动请求终止连接，等待对方的 ==FIN 报文==；
+- **FIN_WAIT_2**：半关闭状态；出现在关闭连接时，客户端和服务器两次挥手之后的状态；在这个状态下，主动关闭一方还有接收数据的能力，但是已经无法发送数据；
+- **TIME_WAIT**：
+- **CLOSING**：如果双方几乎同时关闭一个 `socket` 的话，就会出现同时发送 ==FIN 报文== 的情况，此时双方进入 **CLOSING** 状态，表示双方都正在关闭 `socket` 连接；
+- **CLOSE_WAIT**：被动关闭一方收到 ==FIN 报文==，并回复 ==ACK 报文== 后，处于的状态；等待没有数据需要发出后，向对方发送一个 ==FIN 报文==，进入 `LAST_ACK` 状态；
+- **LAST_ACK**：被动关闭的一方发送 ==FIN 报文== 后，等待对方的 ==ACK 报文==；
 
 ### 3.2 TCP 重传、滑动窗口、流量控制、拥塞控制
 
@@ -633,8 +585,8 @@ TCP 会在以下两种情况发生超时重传：
 
 两种超时时间不同的情况：
 
-- 当超时时间 **RTO 较大** 时，丢包后过很久才重发，没有没有效率，性能差；
-- 当超时时间 **RTO 较小** 时，会导致可能并没有丢就᯿发，于是重发的就快，会增加⽹络拥塞，导致更多的超时，更多的超时导致更多的重发。
+- 当超时时间 **RTO 较大** 时，丢包后过很久才重发，没有效率，性能差；
+- 当超时时间 **RTO 较小** 时，会导致可能并没有丢就重发，于是重发的就快，会增加⽹络拥塞，导致更多的超时，更多的超时导致更多的重发。
 
 **超时重传时间 RTO 的值应该略⼤于报⽂往返 RTT 的值**。
 
@@ -735,6 +687,8 @@ TCP 提供⼀种可以让「发送⽅」根据「接收⽅」的实际接收能�
 
 ###### 慢启动
 
+慢启动算法的思路是：不要一开始就发送大量的数据，先探测以下一下网络的拥塞程度，其原理是：
+
 当发送⽅ **每收到⼀个 ACK，拥塞窗口 `cwnd` 的⼤⼩就会加 1**。举个例子：
 
 - 连接建⽴完成后，⼀开始初始化 `cwnd = 1`，表示可以传⼀个 ==MSS== ⼤⼩的数据；
@@ -801,6 +755,311 @@ TCP 认为这种情况不严重，因为⼤部分没丢，只丢了⼀⼩部分�
 - 重传丢失的数据包；
 - 如果再收到重复的 ACK，那么 `cwnd` 增加 1；
 - 如果收到新数据的 ACK 后，把 `cwnd` 设置为第⼀步中的 `ssthresh` 的值，原因是该 ACK 确认了新的数据，说明从 duplicated ACK 时的数据都已收到，该恢复过程已经结束，可以回到恢复之前的状态了，也即再次进⼊拥塞避免状态；
+
+### 3.3 Socket 编程
+
+#### TCP Socket 编程
+
+![TCP_socket.PNG](https://i.loli.net/2021/08/05/1Gj7JDBFmz3o5YO.png)
+
+- 服务端和客户端初始化 `socket`，得到文件描述符；
+- 服务端调用 `bind`，绑定 IP 地址和端口；
+- 服务端调用 `listen`，监听端口号；
+- 服务端调用 `accept`，等待客户端连接；
+- 客户端调用 `connect`，向服务器端的地址和端口发起连接请求；
+- 服务端 `accept` 返回用于传输的 `socket` 的文件描述符；
+- 客户端调用 `write` 写入数据；服务端调用 `read` 读取数据；
+- 客户端断开连接时，会调用 `close`，那么服务端 `read` 读取数据时，就会读取到 ==EOF==，待处理完数据后，服务端调用 `close`，表示连接关闭。
+
+服务端调⽤ `accept` 时，连接成功了会返回⼀个 **已完成连接的** `socket`，后续⽤来传输数据。
+
+即监听的 `socket` 和真正用来传送数据的 `socket`，是两个 `socket`，一个叫作 **监听** `socket`，一个叫作 **已完成连接的** `socket`。
+
+##### socket 函数
+
+函数原型如下：
+
+``` c++
+int socket(int domain, int type, int protocol);
+```
+
+`socket` 函数对应于普通文件的打开操作，用于创建一个 `socket 描述符`，唯一地标识一个 `socket`。
+
+- `domain`：协议族决定了 `socket` 的地址类型；
+- `type`：指定 `socket` 类型；SOCK_STREAM、SOCK_DGRAM等；
+- `protocol`：指定协议；IPPROTO_TCP、IPPROTO_UDP等。`protocol` 为 0 时，会自动选择 `type` 类型对应的默认协议；
+
+调用 `socket` 函数返回值，没有一个具体的地址。失败返回 `-1`。
+
+##### bind 函数
+
+函数原型如下：
+
+``` c++
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+```
+
+- `sockfd`：`socket 描述字`;
+- `addr`：指定要绑定给 `sockfd` 的协议地址，根据创建 `socket` 时的地址协议族不同而不同
+
+``` c
+struct sockaddr_in {
+    sa_family_t    sin_family;	/* address family: AF_INET */
+    in_port_t      sin_port;	/* port in network byte order */
+    struct in_addr sin_addr;	/* internet address */
+}
+
+struct in_addr {
+    uint32_t	   s_addr;
+}
+```
+
+- `addrlen`：地址长度。
+
+通常服务器启动时都会绑定一个众所周知的地址，用于提供服务；二客户端就不用指定，在 `connect()` 时由系统自动分配一个端口号和自身的 IP 地址组合。
+
+函数执行成功返回值为 `0`，反之为 `SOCKET_ERROR, -1`。
+
+##### listen 时参数 backlog 的意义
+
+Linux 内核会维护两个队列：
+
+- 未完成连接队列（SYN 队列）：接收到⼀个 SYN 建⽴连接请求，处于 `SYN_RCVD` 状态；
+
+- 已完成连接队列（Accept 队列）：已完成 TCP 三次握⼿过程，处于 `ESTABLISHED` 状态.
+
+<img src="https://i.loli.net/2021/08/09/8Y2bp5gHMF67uDv.png" alt="内核队列.PNG" style="zoom:80%;" />
+
+``` c
+int listen(int socketfd, int backlog)
+```
+
+- `socketfd` 为文件描述符
+- `backlog` 为相应的 `socket` 可以排队的最大连接个数；
+
+现在通常认为 `backlog` 是 `accept` 队列。
+
+##### connect 函数
+
+函数原型如下：
+
+``` c++
+int connect(int sockfd, const strucr sockaddr *addr, socklen_t addrlen);
+```
+
+- `addr` ：服务器的 `socket` 地址；
+
+##### accept 函数
+
+函数原型如下：
+
+``` c++
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+```
+
+##### accept 发生在三次握手的哪一步
+
+<img src="C:\Users\10295\AppData\Roaming\Typora\typora-user-images\image-20210809143213836.png" alt="image-20210809143213836" style="zoom:80%;" />
+
+- 客户端的协议栈向服务器端发送了 ==SYN 包==，并告诉服务器端当前发送序列号 `client_isn`，客户端进⼊`SYN_SENT` 状态；
+- 服务器端的协议栈收到这个包之后，进⾏ ==ACK 应答==，应答的值为 `client_isn+1`，表示对 SYN 包 `client_isn `的确认，同时服务器也发送⼀个 ==SYN 包==，告诉客户端当前我的发送序列号为 `server_isn`，服务器端进⼊ `SYN_RCVD` 状态;
+- 客户端协议栈收到 ACK 之后，使得应⽤程序从 `connect` 调⽤返回，表示客户端到服务器端的单向连接建⽴成功，客户端的状态为 `ESTABLISHED`，同时客户端协议栈也会对服务器端的 SYN 包进⾏应答，应答数据为`server_isn+1`；
+
+- 应答包到达服务器端后，服务器端协议栈使得 `accept` 阻塞调⽤返回，这个时候服务器端到客户端的单向连接也建⽴成功，服务器端也进⼊ `ESTABLISHED` 状态。
+
+由上图可知，客户端 `connect` 成功返回是在 **第⼆次握⼿**，服务端 `accept` 成功返回是在 **三次握⼿成功** 之后。
+
+- `accept` 返回的是一个已连接的 `socket 描述字`，与服务器端调用 `socket` 函数得到的 `sockfd` 不同
+
+##### read/write 函数
+
+函数原型如下：
+
+``` c++
+ssize_t read(int fd, void *buf, size_t count);
+
+ssize_t write(int fd, const void *buf, size_t count);
+```
+
+- `read()` 函数负责从 `fd` 中读取内容。读取成功时，返回实际所读的字节数，如果返回值为 0，表示已经读到了文件的结束，小于 0 表示出现了错误；
+  - `fd`：`socket 描述字`;
+  - `buf`：缓冲区；
+- `write()` 函数将 `buf` 中的 nbytes 字节内容写入文件描述符 `fd`，成功时返回写的字节数。失败时返回 `-1`，并设置 `errno` 变量。
+
+##### 客户端调用 close 
+
+<img src="https://i.loli.net/2021/08/09/CEUMOJcv9ixbedB.png" alt="socket编程四次挥手.PNG" style="zoom:80%;" />
+
+- 客户端调⽤ `close`，表明客户端没有数据需要发送了，则此时会向服务端发送 ==FIN 报⽂==，进⼊ `FIN_WAIT_1`状态；
+- 服务端接收到了 ==FIN 报⽂==，TCP 协议栈会为 FIN 包插⼊⼀个⽂件结束符 EOF 到接收缓冲区中，应⽤程序可以通过 read 调⽤来感知这个 FIN 包。这个 **EOF 会被放在已排队等候的其他已接收的数据之后**，这就意味着服务端需要处理这种异常情况，因为 EOF 表示在该连接上再⽆额外数据到达。此时，服务端进⼊ `CLOSE_WAIT `状态；
+- 当处理完数据后，⾃然就会读到 EOF ，于是也调⽤ `close` 关闭它的套接字，这会使得客户端会发出⼀个 ==FIN 报文==，之后处于 `LAST_ACK` 状态；
+- 客户端接收到服务端的 FIN 包，并发送 ==ACK 确认包== 给服务端，此时客户端将进⼊ `TIME_WAIT` 状态；
+- 服务端收到 ==ACK 确认包== 后，就进⼊了最后的 `CLOSE` 状态；
+- 客户端经过 ==2MSL== 时间之后，也进⼊ `CLOSE` 状态。
+
+#### 一个简单的 TCP server 程序
+
+server.cpp 的代码是：
+
+``` c
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<error.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netline/in.h>
+#include<unistd.h>
+
+#define MAXLINE 4096
+
+int main(int argc, char **argv) {
+    int listenfd, connfd;
+    struct sockaddr_in servaddr;
+    char buff[4096];
+    int n;
+    
+    if ( (listenfd = socket(AP_INET, SOCK_STREAM, 0)) == -1) {
+        print();
+        return 0'
+    } 
+    
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(6666);
+    
+    if ( bind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) == -1) {
+        printf();
+        return 0;
+    }
+    
+    if (listen(listenfd, 10) == -1) {
+        printf();
+        return 0;
+    }
+    
+    printf("=======waiting for client's request=======\n");
+    while(1) {
+        if ( (connfd = accept(listenfd, (struct sockaddr*)&NULL, NULL)) == -1) {
+            printf();
+            continue;
+        }
+        n = recv(connfd, buff, MAXLINE, 0);
+        buff[n] = '\0';
+        printf("resv msg form client: %s\n", buff);
+        close(connfd);
+    }
+    close(connfd);
+    return 0;
+} 
+```
+
+client.cpp 的代码是：
+
+``` c
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<error.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netline/in.h>
+#incldue<arpa/inet.h>
+#include<unistd.h>
+
+#define MAXLINE 4096
+
+int main(int argc char **argv) {
+    int sockfd, n;
+    char recvline[4096], sendline[4096];
+    struct sockaddr_in servaddr;
+    
+    if (argc != 2) {
+        printf();
+        return 0;
+    }
+    
+    if ( (sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        printf();
+        return 0;
+    }
+    
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(6666);
+    if ( inet_pton(AF_INET, argv[1], &servaddr.sin_addr) <= 0) {
+        printf();
+        return 0;
+    }
+    
+    if ( connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
+        printf();
+        return 0;
+    }
+    
+    printf("send msg to server: \n");
+    fgets(sendline, 4096, stdin);
+    if ( send(sockfd, sendline, strlen(sendline), 0) < 0) {
+        printf();
+        return 0;
+    }
+    
+    close(sockfd);
+    return 0;
+}
+```
+
+`inet_pton` 的函数原型为：
+
+``` c
+int inet_pton(int af, const char *src, void *dst);
+```
+
+这个函数负责转换字符串到网络地址，第一个参数 `af` 是地址族，转换后存到 `dst` 中。
+
+#### 3.4、TCP 协议选项
+
+- TCP 头部的选项部分是 **为了 TCP 适应复杂的网络环境和更好地服务于应用** 而进行设计的；
+- TCP 选项部分最长可以达到 `40 Byte`，再加上 TCP 选项外的固定的 `20 Byte` 部分， TCP的头部最长可达 `60 Byte`；
+- TCP 头部长度可以通过 TCP 头部中 **数据偏移位** 来查看：TCP 偏移量的单位是 `32bit` ，也就是 `4 Byte`。 TCP 数据偏移为 共占 `4bit` ，取最大 `1111` 计算也就是十进制的 `15`。$15 * 4Bytes = 60 Bytes$​，这个也 TCP 首部不超过 `60Byte` 的原因。
+
+#### 3.5、网络字节序与主机序
+
+- 不同的 CPU 有不同的字节序类型，这些字节序是指 **整数在内存中保存的顺序**，称为 **主机序**;
+- 最常见的有两种：
+  - **小端**：把地址低位存储值的低位，地址高位存储值的高位；
+  - **大端**：把地址低位存储值的高位，地址高位存储值的低位；
+- 举个例子，数字 `0x12345678` 在两种字节序 CPU 中的存储顺序如下图所示：
+
+![主机序.PNG](https://i.loli.net/2021/08/13/1F9chWbT4AKnked.png)
+
+- C/C++ 编写的程序里的数据存储顺序跟编译平台所在的 CPU 相关；而 Java 编写的程序采用的是 **大端** 来存储数据；
+- 所有网络协议都是采用 **大端** 的方式来传输数据，因此大端也叫做 **网络字节序**。
+
+#### 3.6 封包和解包
+
+- TCP 是个 **“流”协议**，所谓流，就是 **没有界限的一串数据**；
+
+- 由于 TCP “流”的特性以及网络状况，在进行数据传输时假设我们连续调用两次 `send` 分别发送两段数据 data1和 data2，在接收端有以下几种接收情况：
+
+  - 先接收到 data1 ，然后接收到 data2；
+  - 先接收到 data1 的部分数据，然后接收到 data1 余下的部分以及 data2 全部；
+  - 先接收到了 data1 的全部数据和 data2 的部分数据，然后接收到了 data2 的余下的数据；
+  - 次性接收到了 data1 和 data2 的全部数据；
+
+  对于第一种种情况正是我们需要的， 对于后面三种情况就是常说的 **粘包**，就需要把接收到的数据进行 **拆包**，拆成一个个独立的数据包；而为了拆包就必须在发送端进行 **封包**。
+
+- 对于 UDP 来说就不存在拆包的问题，因为 UDP 是个 **”数据包”协议**，也就是两段数据间是有界限的，在接收端要么接收不到数据要么就是接收一段完整的数据；
+
+- 出现 **粘包** 的原因：
+
+  - **由 Nagle 算法造成的发送端的粘包**；当要提交 段数据给 TCP 发送时， TCP 并不立刻发送此段数据，而是等待一小段时间，看看在等待期间是否还有要发送的数据，若有则会把多段数据发送出去，例如后两种情况；
+  - **接收端接收不及时造成的接收端粘包**；TCP 会把接收到的数据存在自己的缓冲区中，然后通知应用层取数据。当应用层由于某些原因不能及时取出 TCP 的数据，就会造成 TCP缓冲区中存放了多段数据；
+
+- 封包就是 **给一段数据加上包头**，这样一来数据包就分为包头和包体两部分内容了；包头其实上是个 **大小固定的结构体**，其中有个结构体成员变量表示 **包体的长度**；
+
+- 根据固定的包头长度以及包头中含有的包体长度的变量值就能正确的拆分出 个完整的数据包。
 
 ## 四、IP 篇
 
@@ -1024,3 +1283,157 @@ ICMP 主要的功能包括：**确认 IP 包是否成功送达⽬标地址、报
 
 在 IP 通信中如果某个 IP 包因为某种原因未能达到⽬标地址，那么这个具体的原因将由 ICMP 负责通知。
 
+### 4.4 网络 IO 模型
+
+#### 四种网络 IO 模型
+
+IO 有两种操作，**同步 IO** 和 **异步 IO**。 同步 IO 指的是，必须等待 IO 操作完成后，控制权才返回给用户进程；异步 IO 则是，无须等待 IO 操作完成，就将控制权返回给用户进程。
+
+##### 1、阻塞 IO 模型
+
+- 阻塞和非阻塞的概念描述的是用户线程调用内核 IO 操作的方式：阻塞是指 IO 操作需要彻底完成后才返回到用户空间；而非阻塞是指 IO 操作被调用后立即返回给用户一个状态值，不需要等到 IO 操作彻底完成。
+
+- 阻塞 IO 模型的特点就是 IO 执行的两个阶段（等待数据和拷贝数据）都被阻塞了；
+- 大部分的 socke 接口都是阻塞型的 所谓阻塞型接口是指系统调用时（一般是 IO 接口）却不返回调用结果，并让当前线程一直处于阻塞状态，只有当该系统调用获得结果或者超时出错时才返回结果；
+
+##### 2、非阻塞 IO 模型
+
+- 在非阻塞式 IO 中，用户进程其实需要 **不断地主动询问** kernel 数据是否准备好，非阻塞的接口相比于阻塞型接口的显著差异在于 **被调用之后立即返回**；
+
+##### 3、多路 IO 复用模型
+
+- 多路 IO 复用，有时也称为事件驱动 IO。
+- 它的基本原理就是有个函数（如 select ）会 **不断地轮询所负责的所有 socket** ，当某个 socket 有数据到达了，就通知用户进程；
+
+##### 4、异步 IO 模型
+
+- 用户进程发起 read 操作之后，立刻就可以开始去做其他的事；而另一方面，从内核的角度，当它收到一个异步的 read 请求操作之后，首先会立刻返回，所以不会对用户进程产生任何阻塞 然后，内核会等待数据准备完成，然后将数据拷贝到用户内存中，当这一切都完成之后，内核会给用户进程发送一个信号，返回 read 操作已完成的信息；
+
+各个 IO 模型的对比：
+
+![网络IO模型.PNG](https://i.loli.net/2021/08/13/rGdv3YMtzbTP67N.png)
+
+- 在非阻塞 IO中，虽然进程大部分时间都不会被阻塞，但是它仍然要求进程去主动检查，并且当数据准备完成以后，也需要进程主动地再次调用 `recvfrom` 来将数据拷贝到用户内存中；
+- 异步 IO 则完全不同，它就像是用户进程将整个 IO 操作交给了他人（内核）完成，然后内核做完后发信号通知 在此期间，用户进程不需要去检查 IO 操作的状态，也不需要主动地拷贝数据。
+
+#### select 函数
+
+`select` 函数原型：
+
+``` c
+int select(int maxfdp, fd_set *readfds, fd_set *writefds, fd_set *errorfds, struct timeval *timeout);
+```
+
+这里面用到了两个结构体：`fd_set` 和 `timeval`。结构体 `fd_set` 可以理解为一个集合，这个集合中存放的是文件描述符；`time_val` 是一个常用的结构，用来代表时间值，有两个成员，一个是秒数，另一个是毫秒数。
+
+``` c
+fd_set set;
+FD_ZERO(&set);			/* 将 set 清零 */
+FD_SET(fd, &set);		/* 将 fd 加入 set 中 */
+FD_CLR(fd, &set);		/* 将 fd 从 set 中清除 */
+FD_ISSET(fd, &set);		/* 如果 fd 在 set 中为真 */
+```
+
+- `maxfdp` 是一个整数值，是指集合中所有文件描述符的范围，即所有文件描述符的最大值加 `1`；
+- `readfds` 是指向 `fd_set` 结构的指针，这个集合中应该包括文件描述符 因为要监视文件描述符的读变化的，即关心是否可以从这些文件中读取数据，如果这个集合中有一个文件可读， `select` 就会返回一个大于 `0` 的值，表示有文件可读；
+-  `writefds` 是指向 `fd_set` 结构的指针，这个集合中应该包括文件描述符。因为要监视文件描述符的写变，即关心是否可以向这些文件中写入数据，如果这个集合中有一个文件可写， select 就会返回一个大于 `0` 的值，表示有文件可写；
+- `errorfds` 同上面两个参数的意图，用来监视文件错误异常;
+- `timeout` 是 `select` 的超时时间，可以使 `select` 处于 `3` 种状态：
+  - 若将 NULL 以形参传入，即不传入时间结构，就是将 `select` 置于阻塞状态，等到监视文件描述符集合中某个文件描述符发生变化为止；
+  - 若将时间值设为 `0`，就变成一个纯粹的非阻 函数，不论文件描述符是否有有变化，都立刻返回继续执行，文件无变化返回 `0`，有变化返回一个正值；
+  - `timeout` 的值大于 `0`，这就是等待的超时时间，即 `select` 在 `timeout` 时间内阻 ，超时时间之内有事件到来就返回了，否则在超时后不管怎样一定返回，返回值同上述。
+- 返回值：准备就绪的描述符数，若超时返回 `0`，出错返回 `-1`。
+- 使用 select 函数提高服务器的处理能力：
+
+``` c
+fd_set client_fdset;
+FD_ZERO(&client_fdset);			
+FD_SET(serverfd, &client_fdset);		
+
+struct timeval tv;
+int client_sockfd[5];
+
+tv.tv_sec = 30;
+tv.yv_usec = 0;
+
+for (int i = 0; i < 5; ++i) {
+    if (client_sockfd[i] != 0)
+        FD_SET(client_sockfd[i], &client_fdset);
+}
+
+ret = select(maxsock+1, &client_fdset, NULL, NULL, &tv);
+if (ret < 0) {
+    printf("select error!\n");
+    break;
+}else if (ret == 0) {
+    printf("timeout!\n");
+    continue;
+}
+
+// 轮询各个文件描述符
+// 先看已经连上的 client 的 fd 有无可读数据，没有的话，要将相应的 client 关闭连接，并将它在集合里清掉
+// 然后检查是否有新的连接,如果有，建立接收连接，加入到 client_sockfd 中，发送一个消
+// 息给 client ，方便看到 client 已经连上了。并且，还需要把 maxsock 更新，因为下一次进入
+// while 循环调用 select 时，需要传当前最大的 fd 值＋1 给 select 函数
+```
+
+- 如此，server 就能同时处理多个 client 的请求
+
+#### poll 函数
+
+- `poll` 函数原型：
+
+``` c
+int poll(struct pollfd *fds, unsigned int nfds, int timeout);
+
+struct pollfd {
+    int fd;
+    short events;		/* 等待的事件 */
+    short revents;		/* 实际发生了的事件 */
+};
+```
+
+每一个 poll 结构体指定了一个被监视的文件描述符。每个结构体的 `events` 域是监视该文件描述符的事件掩码，由用户来设置这个域的属性 `revents` 是文件描述符的操作结果事件掩码，内核在调用返回时设置这个域。成功时，`poll ()` 返回结构体中 `revents` 域不为 0 的文件描述符个数：如果在超时前没有任何事件发生，`poll()` 返回 0； 失败时，`poll()` 返回 -1。
+
+- 使用 `poll` 函数提高服务器的处理能力
+
+``` c
+#define OPEN_MAX 100
+// 先把服务器的描述符加入到描述符集合中
+struct pollfd clientfds[OPEN_MAX];
+
+clientfds[0].fd = listenfd;
+clientfds[0].fd = POLLIN;		// POLLI 有数据可读事件
+
+// 接下来将数组初始化，注意别把第一个元素给覆盖了，因为第一个已添加了服务器描述符
+for (int i = 1; i < OPEN_MAX; ++i) {
+    clients[i].fd = -1;
+}
+
+// 接着是 while 循环，查看是否有新客户端连接，或者老客户端是否有数据发送过来
+// 这里的超时时间设为 -1 ，表示无限超时，使 poll() 一直挂起直到一个指定事件发生
+int maxi = 0;
+while (1) {
+    nready = poll(clientfds, maxi+1, INFTIM);
+    ...
+        
+    // 当有新的客户端连接时，必须接受，获得新的 fd，并将新 fd 放到数组中
+        
+    // 还需要处理已连接上来的客户端有可指发来的包
+}
+```
+
+- `poll` 函数也能让服务器具备同时处理多个客户端请求的能力。
+
+#### epoll 函数
+
+- 相对于 `select` 和 `poll` 来说， `epoll` 更加灵活，没有描述符限制；
+- `epoll` 使用一个文件描述符管理多个描述符，将用户关系的文件描述符的事件存放到内核的一个事件表中，这样在用户空间和内核空间之间的数据拷贝只需一次
+
+#### select、poll、epoll 的区别
+
+- `select`、`poll` 和 `epoll` 都是 **多路 IO 复用** 的机制；多路 IO 复用就通过 种机制，可以监视多个描述符， 一旦某个描述符就绪（一般是读就绪或者写就绪），能够通知程序进行相应的读写操作；
+- `select`、`poll` 和 `epoll` 本质上都是 **同步 IO**，因为它们都需要在读写事件就绪后自己负责进行读写，即是**阻塞的**；
+- `select` 和 `poll`：
+  - 一般认为 `poll()` 比 `select()` 要高级一些；
+  - 
