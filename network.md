@@ -1212,7 +1212,7 @@ int inet_pton(int af, const char *src, void *dst);
 - C/C++ 编写的程序里的数据存储顺序跟编译平台所在的 CPU 相关；而 Java 编写的程序采用的是 **大端** 来存储数据；
 - 所有网络协议都是采用 **大端** 的方式来传输数据，因此大端也叫做 **网络字节序**。
 
-### 3.6 封包和解包
+### 3.6、 封包和解包
 
 - TCP 是个 **“流”协议**，所谓流，就是 **没有界限的一串数据**；
 
@@ -1236,7 +1236,7 @@ int inet_pton(int af, const char *src, void *dst);
 
 - 根据固定的包头长度以及包头中含有的包体长度的变量值就能正确的拆分出一个完整的数据包。
 
-### 3.7 TCP 重传参数
+### 3.7、 TCP 重传参数
 
 - 在 TCP 中，**ACK 报文是不会重传的**。
 
@@ -1264,7 +1264,7 @@ cat /proc/sys/net/ipv4/tcp_retries2
 15
 ```
 
-- 如果第一次挥手丢失了，那么客户端迟迟收不到被动方的 ACK 的话，也就会触发超时重传机制，重传 FIN 报文，重发次数由 `tcp_orphan_retries` 参数控制：
+- 如果第一次挥手丢失了，客户端迟迟收不到被动方的 ACK 的话，也会触发超时重传机制，重传 FIN 报文，重发次数由 `tcp_orphan_retries` 参数控制：
 
 ``` shell
 cat /proc/sys/net/ipv4/tcp_orphan_retries
@@ -1295,7 +1295,7 @@ cat /proc/sys/net/ipv4/tcp_abort_on_overflow
   - `somaxconn` 是 Linux 内核的参数，默认值是 128，可以通过`/proc/sys/net/core/somaxconn` 来设置其值；
   - `backlog` 是 `listen(int sockfd, int backlog)` 函数中的 backlog ⼤⼩，Nginx 默认值是 511，可以通过修改配置⽂件设置其⻓度；
 
-### TCP 三次握手性能提升
+### 3.8、TCP 三次握手性能提升
 
 ![三次握手优化.PNG](https://i.loli.net/2021/08/25/YFoDIc5n4KyOjVx.png)
 
