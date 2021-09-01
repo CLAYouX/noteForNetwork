@@ -381,38 +381,6 @@ $$
 - 首先主要是 **文件描述符限制**，Socket 都是文件，所有要通过 `ulimit` 配置文件描述符的数目；
 - 其次是 `内存限制`，每个 TCP 连接都要占用一定的内存，而操作系统的内存是有限的。
 
-##### UDP 和 TCP 的区别和各自应用场景
-
-UDP 不提供复杂的控制机制，利⽤ IP 提供 **⾯向⽆连接的通信服务**。
-
-UDP 头部如下：
-
-![UDP头.PNG](https://i.loli.net/2021/08/08/AxQ4BeDORGzburE.png)
-
-TCP 和 UDP 区别：
-
-1. 连接：
-   - TCP 是 **面向连接** 的传输层协议，传输数据前先要建立连接。
-   - UDP 是 **面向无连接** 
-2. 服务对象
-   - TCP 是 **一对一的两点服务**
-   - UDP 则支持 一对一、一对多、多对多的交互通信
-3. 可靠性：
-   - TCP 是**可靠交付数据** 的，数据可以无差错、不丢失、不重复、按需到达；
-   - UDP 则是尽最大努力交付，不保证可靠交付数据
-4. 拥塞控制、流量控制：
-   - TCP **有拥塞控制和流量控制机制**，保证数据传输的安全性；
-   - UDP 则没有，即使网络非常拥堵了，也不会影响 UDP 的发送速率。
-5. 首部开销：
-   - TCP 首部长度较长，会有一定的开销，首部在没有使用 `选项` 字段时是 ==20 字节==，如果使用了 `选项` 字段，则会更长；
-   - UDP 首部只有 ==8 字节==，并且是固定不变的，开销较小。
-6. 传输方式：
-   - TCP 是 **流式传输**，没有边界，但保证顺序和可靠；
-   - UDP 是一个包一个包的发送，是有边界的，但可能会丢包和乱序。
-7. 分片不同：
-   - TCP 的数据⼤⼩如果 **⼤于 MSS **，则会 **在传输层进⾏分⽚**，⽬标主机收到后，也同样 **在传输层组装 TCP数据包**，如果中途丢失了⼀个分⽚，只需要传输丢失的这个分⽚；
-   - UDP 的数据⼤⼩如果 **⼤于 MTU **，则会 **在 IP 层进⾏分⽚**，⽬标主机收到后，在 **IP 层组装完数据**，接着再传给传输层，但是如果中途丢了⼀个分⽚，在实现可靠传输的 UDP 时则就需要 **重传所有的数据包**，这样传输效率⾮常差，所以通常 UDP 的报⽂应该⼩于 MTU。
-
 ##### 为什么 UDP 头部有包长度字段，而 TCP 头部则没有
 
 TCP 计算负载数据长度公式：
@@ -642,6 +610,12 @@ TCP 有⼀个 **保活机制**，用于处理这种情况：定义⼀个时间�
 - 对端程序正常⼯作。当 TCP 保活的探测报⽂发送给对端, 对端会正常响应，这样 TCP 保活时间会被 **重置**，等待下⼀个 TCP 保活时间的到来。
 - 对端程序崩溃并重启。当 TCP 保活的探测报⽂发送给对端后，对端是可以响应的，但由于没有该连接的有效信息，会产⽣⼀个 ==RST 报⽂==，这样很快就会发现 TCP 连接已经被重置。
 - 对端程序崩溃，或对端由于其他原因导致报⽂不可达。当 TCP 保活的探测报⽂发送给对端后，⽯沉⼤海，没有响应，连续⼏次，达到保活探测次数后，TCP 会报告该 TCP 连接已经死亡。
+
+##### 产生 RST 的三个条件
+
+- 目的地为某端口的 SYN 到达，然而该端口上没有正在监听的服务器；
+- TCP 想取消一个已有连接；
+- TCP 接收到一个根本不存在的连接上的分节；
 
 ##### TCP 状态流转图：
 
@@ -1023,14 +997,25 @@ int connect(int sockfd, const strucr sockaddr *addr, socklen_t addrlen);
 ```
 
 - `addr` ：服务器的 `socket` 地址；
+- 客户端在调用 `connect` 前不必非得调用 `bind` 函数，因为如果需要的话，内核会确定源 IP 地址，并选择一个临时端口作为源端口；
+- 调用 `connect` 将激发 TCP 的三路握手过程，仅在连接建立成功或出错时才返回；出错返回的情况可能包括以下集中：
+  - TCP 客户没有收到 SYN 分解的响应，返回 `ETIMEDOUT` 错误。
+  - 对客户的SYN的响应是 RST，则表明该服务器主机上在我们指定端口上没有进程在等待与之连接，这是一个 **硬错误**， 返回 `ECONNREFUSED` 错误；
+  - 客户发出的 SYN 在中间的某个路由器上引发了一个 ”destination unreachable" ICMP 错误，这是一种 **软错误**。按第一种情况重发，若超过规定时间后，则返回 `EHOSTUNREACH` 或 `ENETUNREACH` 错误。
 
 ##### accept 函数
+
+- `accept` 函数由 TCP 服务器调用，用于从已完成连接队列队头返回下一个已完成连接。如果已完成连接队列为空，那么进程被投入睡眠；
 
 函数原型如下：
 
 ``` c++
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 ```
+
+- 参数 `addr` 和 `addrlen` 用来返回已连接的对端进程的协议地址。
+- 如果 `accept` 成功，那么其返回值是由内核自动生成的一个 **全新描述符**，代表与所返回客户的 TCP 连接。
+- 通常称 `accept` 的第一个参数为 **监听套接字描述符**，称它的返回值为 **已连接套接字描述符**。一个服务器通常只创建一个监听套接字，它在该服务器的生命期内一直存在。内核为每个由服务器进程接受的客户连接创建一个已连接套接字。当服务器完成对某个给定客户的服务时，相应的已连接套接字就被关闭。
 
 ##### accept 发生在三次握手的哪一步
 
@@ -1061,6 +1046,23 @@ ssize_t write(int fd, const void *buf, size_t count);
   - `buf`：缓冲区；
 - `write()` 函数将 `buf` 中的 nbytes 字节内容写入文件描述符 `fd`，成功时返回写的字节数。失败时返回 `-1`，并设置 `errno` 变量。
 
+##### close 函数
+
+- `close` 函数用来关闭套接字，并终止 TCP 连接
+
+``` c++
+#include <unistd.h>
+
+int close(int sockfd);
+```
+
+- 调用 `close` 函数会将套接字描述符的引用计数减 1，如果减 1 后，引用计数值仍大于 0，这个 `close` 调用并不引发 TCP 的四分组连接终止序列，对于子进程与父进程共享已连接套接字的并发服务器来说，这是期望的。
+
+##### 并发服务器
+
+- 当服务一个客户请求可能花费较长时间时，我们并不希望整个服务器被单个客户长期占用，而是希望同时服务多个客户，一个最简单的方法是 **fork 一个子进程来服务每个客户**；
+- 当一个连接建立时，`accept` 返回，服务器接着调用 `fork`，然后由子进程服务客户，父进程则等待另一个连接，父进程关闭已连接套接字；
+
 ##### 客户端调用 close 
 
 <img src="https://i.loli.net/2021/08/09/CEUMOJcv9ixbedB.png" alt="socket编程四次挥手.PNG" style="zoom:80%;" />
@@ -1080,10 +1082,10 @@ ssize_t write(int fd, const void *buf, size_t count);
 #include<stdio.h>
 #include<stdlib.h>
 #include<string.h>
-#include<error.h>
+#include<errno.h>
 #include<sys/types.h>
 #include<sys/socket.h>
-#include<netline/in.h>
+#include<netinet/in.h>
 #include<unistd.h>
 
 #define MAXLINE 4096
@@ -1096,7 +1098,7 @@ int main(int argc, char **argv) {
     
     if ( (listenfd = socket(AP_INET, SOCK_STREAM, 0)) == -1) {
         print();
-        return 0'
+        return 0;
     } 
     
     memset(&servaddr, 0, sizeof(servaddr));
@@ -1136,16 +1138,16 @@ int main(int argc, char **argv) {
 #include<stdio.h>
 #include<stdlib.h>
 #include<string.h>
-#include<error.h>
+#include<errno.h>
 #include<sys/types.h>
 #include<sys/socket.h>
-#include<netline/in.h>
-#incldue<arpa/inet.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
 #include<unistd.h>
 
 #define MAXLINE 4096
 
-int main(int argc char **argv) {
+int main(int argc, char **argv) {
     int sockfd, n;
     char recvline[4096], sendline[4096];
     struct sockaddr_in servaddr;
@@ -1188,6 +1190,7 @@ int main(int argc char **argv) {
 `inet_pton` 的函数原型为：
 
 ``` c
+// P 和 n 分别代表表达（presentation）和数值（numeric），地址的表达格式通常是ASCII 字符串，数值格式则是存放到套接字地址结构中的二进制值
 int inet_pton(int af, const char *src, void *dst);
 ```
 
@@ -1299,7 +1302,7 @@ cat /proc/sys/net/ipv4/tcp_abort_on_overflow
 
 ![三次握手优化.PNG](https://i.loli.net/2021/08/25/YFoDIc5n4KyOjVx.png)
 
-### 四次挥手性能提升
+### 3.9、四次挥手性能提升
 
 #### 主动方优化
 
@@ -1334,6 +1337,181 @@ cat /proc/sys/net/ipv4/tcp_abort_on_overflow
 Linux 提供了 `tcp_max_tw_buckets` 参数，当 `TIME_WAIT` 的连接数量超过该参数时，新关闭的连接就不再经历 `TIME_WAIT` ⽽直接关闭。当服务器的并发连接增多时，相应地，同时处于 `TIME_WAIT` 状态的连接数量也会变多，此时就应当调⼤ `tcp_max_tw_buckets` 参数，减少不同连接间数据错乱的概率。
 
 ![四次挥手优化.PNG](https://i.loli.net/2021/08/25/ibYJjMcwzqSW1mC.png)
+
+### 3.10、一个简单的 UDP socket 回射程序
+
+- `recvfrom` 和 `sendto` 函数原型：
+
+``` c++
+#include <sys/socket.h>
+
+ssize_t recvfrom(int sockfd, void *buff, size_t nbytes, int flags
+                 struct sockaddr *from, socklen_t *addrlen);
+
+ssize_t sendto(int sockfd, void *buff, ssize_t nbytes, int flags,
+               const struct sockaddr *to, socklen_t *addrlen);
+```
+
+- 写一个长度为 0 的数据报是可行的。在 UDP 情况下，这会形成一个只包含一个 IP 首部和一个 8 字节 UDP 首部而没有数据的 IP 数据报。
+
+- 服务端代码：
+
+``` c++
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<errno.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<unistd.h>
+
+#define MAXLINE 4096
+
+void dg_echo(int sockfd, struct sockaddr *pcliaddr, socklen_t clilen) {
+    int n;
+    socklen_t len;
+    char mesg[MAXLINE];
+
+    for (;;) {
+        len = clilen;
+        n = recvfrom(sockfd, mesg, MAXLINE, 0, pcliaddr, &len);
+
+        sendto(sockfd, mesg, n, 0, pcliaddr, len);
+    }
+}
+
+int main(int argc, char **argv) {
+    int sockfd;
+    struct sockaddr_in servaddr, cliaddr;
+    
+    
+    if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+        printf("create socket error: %s(errno：%d)\n", strerror(errno), errno);
+        return 0;
+    } 
+    
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(6666);
+    
+    if ( bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) == -1) {
+        printf("bind socket error: %s(errno: %d)\n", strerror(errno), errno);
+        return 0;
+    }
+    
+    dg_echo(sockfd, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
+
+    return 0;
+} 
+```
+
+- 客户端代码：
+
+``` c++
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<errno.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<unistd.h>
+
+#define MAXLINE 4096
+
+void dg_cli(FILE *fp, int sockfd, const struct sockaddr *pservaddr,                 socklen_t servlen) {
+    int n;
+    char sendline[MAXLINE], recvline[MAXLINE+1];
+
+    while(fgets(sendline, MAXLINE, fp) != NULL) {
+        sendto(sockfd, sendline, strlen(sendline), 0, pservaddr,                        servlen);
+
+        n = recvfrom(sockfd, recvline, MAXLINE, 0, NULL, NULL);
+
+        recvline[n] = 0;
+        fputs(recvline, stdout);
+    }
+}
+
+int main(int argc, char **argv) {
+    int sockfd;
+    struct sockaddr_in servaddr;
+    
+    if (argc != 2) {
+        printf("usage: ./client <ipaddress>\n");
+        return 0;
+    }
+    
+    if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        printf("create socket error: %s(errno：%d)\n", strerror(errno), errno);
+        return 0;
+    }
+    
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(6666);
+    if ( inet_pton(AF_INET, argv[1], &servaddr.sin_addr) <= 0) {
+        printf("inet_pton error for %s\n", argv[1]);
+        return 0;
+    }
+    
+    dg_cli(stdin, sockfd, (struct sockaddr*)&servaddr,                              sizeof(servaddr));
+    
+    exit(0);
+}
+```
+
+### 3.11 UDP 和 TCP 的区别和各自应用场景
+
+UDP 不提供复杂的控制机制，利⽤ IP 提供 **⾯向⽆连接的通信服务**。
+
+UDP 头部如下：
+
+![UDP头.PNG](https://i.loli.net/2021/08/08/AxQ4BeDORGzburE.png)
+
+- TCP 和 UDP 区别：
+
+1. 连接：
+   - TCP 是 **面向连接** 的传输层协议，传输数据前先要建立连接。
+   - UDP 是 **面向无连接** 
+2. 服务对象
+   - TCP 是 **一对一的两点服务**
+   - UDP 则支持 一对一、一对多、多对多的交互通信
+3. 可靠性：
+   - TCP 是**可靠交付数据** 的，数据可以无差错、不丢失、不重复、按需到达；
+   - UDP 则是尽最大努力交付，不保证可靠交付数据
+4. 拥塞控制、流量控制：
+   - TCP **有拥塞控制和流量控制机制**，保证数据传输的安全性；
+   - UDP 则没有，即使网络非常拥堵了，也不会影响 UDP 的发送速率。
+5. 首部开销：
+   - TCP 首部长度较长，会有一定的开销，首部在没有使用 `选项` 字段时是 ==20 字节==，如果使用了 `选项` 字段，则会更长；
+   - UDP 首部只有 ==8 字节==，并且是固定不变的，开销较小。
+6. 传输方式：
+   - TCP 是 **流式传输**，没有边界，但保证顺序和可靠；
+   - UDP 是一个包一个包的发送，是有边界的，但可能会丢包和乱序。
+7. 分片不同：
+   - TCP 的数据⼤⼩如果 **⼤于 MSS **，则会 **在传输层进⾏分⽚**，⽬标主机收到后，也同样 **在传输层组装 TCP数据包**，如果中途丢失了⼀个分⽚，只需要传输丢失的这个分⽚；
+   - UDP 的数据⼤⼩如果 **⼤于 MTU **，则会 **在 IP 层进⾏分⽚**，⽬标主机收到后，在 **IP 层组装完数据**，接着再传给传输层，但是如果中途丢了⼀个分⽚，在实现可靠传输的 UDP 时则就需要 **重传所有的数据包**，这样传输效率⾮常差，所以通常 UDP 的报⽂应该⼩于 MTU。
+
+- UDP 的优势：
+  - UDP 支持广播和多播；
+  - UDP 没有连接建立和拆除；
+
+#### 何时用 UDP 代替 TCP
+
+- 对于广播和多播应用程序必须使用 UDP；
+- 对于简单的请求-应答应用程序可以使用 UDP，**不过错误检测功能必须加到应用程序内部**；
+- 对于海量数据传输不应该使用 UDP。
+
+### 3.12、给 UDP 应用增加可靠性
+
+- 如果想要让请求——应答式应用程序使用 UDP,那么必须在客户程序中增加以下两个特性：
+  - **超时和重传**：用于处理丢失的数据报；
+  - **序列号**：供客户验证一个应答是否匹配相应的请求
+- 增加序列号比较简单。客户为每一个请求冠以一个序列号，服务器必须在返送给客户的应答中回射这个序列号；
 
 ## 四、IP 篇
 
@@ -1599,6 +1777,10 @@ fcntl(fd, F_SETFL, O_NOBLOCK);
 ##### 3、多路 IO 复用模型
 
 - 多路 IO 复用，有时也称为事件驱动 IO。实现 **一个线程可以监视多个文件句柄**；一旦某个文件句柄就绪，就能够通知应用程序进行相应的读写操作；没有文件句柄就绪时会阻塞应用程序，交出cpu。多路是指网络连接，复用指的是同一个线程；
+- IO 复用使用场合：
+  - 客户处理多个描述符（通常是交互式输入和网络套接字）时；
+  - 一个 TCP 服务器既要处理监听套接字，又要处理已连接套接字；
+  - 一个服务器既要处理 TCP，又要处理 UDP；
 - 它的基本原理就是有个函数（如 `select` ）会 **不断地轮询所负责的所有 socket** ，当某个 socket 有数据到达了，就通知用户进程；![多路IO复用.PNG](https://i.loli.net/2021/08/31/fP9Kya3JTIQHpRL.png)
 - 当用户进程调用了 `select`，那么整个进程会被阻塞，而同时，内核会“监视”所有 `select` 负责的 `socket`，当任何一个 `socket` 中的数据准备好了， `select` 就会返回 这个时候用户进程再调用 `read` 操作，将数据从内核拷贝到用户进程；
 - 这个模型和阻塞 IO 的模型其实并没有太大的不同， 事实上还更差一些。因为这里需要使用两个系统调用（ `select` 和 `recvfrom` ）；用 `select` 的优势在于它可以同时处理多个连接；所以，如果处理的连接数不是很高的话，使用 `select/epoll` Web server 定比使用多线程的阻塞 IO Web server 性能更好，可能
@@ -1626,7 +1808,7 @@ fcntl(fd, F_SETFL, O_NOBLOCK);
 - 在非阻塞 IO中，虽然进程大部分时间都不会被阻塞，但是它仍然要求进程去主动检查，并且当数据准备完成以后，也需要进程主动地再次调用 `recvfrom` 来将数据拷贝到用户内存中；
 - 异步 IO 则完全不同，它就像是用户进程将整个 IO 操作交给了他人（内核）完成，然后内核做完后发信号通知 在此期间，用户进程不需要去检查 IO 操作的状态，也不需要主动地拷贝数据。
 
-#### select 函数
+### select 函数
 
 - 该函数允许进程指示内核等待多个事件中的任何一个发生，并只在有一个或多个事件发生或经历一段指定的时间后才唤醒它。
 
@@ -1648,7 +1830,7 @@ FD_ISSET(fd, &set);		/* 如果 fd 在 set 中为真 */
 
 - `maxfdp` 是一个整数值，是指集合中所有文件描述符的范围，即所有文件描述符的最大值加 `1`；
 - `readfds` 是指向 `fd_set` 结构的指针，这个集合中应该包括文件描述符。因为要监视文件描述符的读变化的，即关心是否可以从这些文件中读取数据，如果这个集合中有一个文件可读， `select` 就会返回一个大于 `0` 的值，表示有文件可读；
--  `writefds` 是指向 `fd_set` 结构的指针，这个集合中应该包括文件描述符。因为要监视文件描述符的写变，即关心是否可以向这些文件中写入数据，如果这个集合中有一个文件可写，`select` 就会返回一个大于 `0` 的值，表示有文件可写；
+- `writefds` 是指向 `fd_set` 结构的指针，这个集合中应该包括文件描述符。因为要监视文件描述符的写变，即关心是否可以向这些文件中写入数据，如果这个集合中有一个文件可写，`select` 就会返回一个大于 `0` 的值，表示有文件可写；
 - `errorfds` 同上面两个参数的意图，用来监视文件错误异常;
 - `timeout` 是 `select` 的超时时间，可以使 `select` 处于 `3` 种状态：
   - 若将 NULL 以形参传入，即不传入时间结构，就是将 `select` 置于阻塞状态，等到监视文件描述符集合中某个文件描述符发生变化为止；
@@ -1657,47 +1839,255 @@ FD_ISSET(fd, &set);		/* 如果 fd 在 set 中为真 */
 - 返回值：准备就绪的描述符数，若超时返回 `0`，出错返回 `-1`。
 - `select` 使用 **描述符集**，通常是一个整数数组，其中每个整数中的每一位对应一个描述符。举例来说，假设使用32位整数，那么该整数的第一个元素对应于描述符 `0~31`，第二个整数对应于描述符 `32~63`，以此类推。
 - `select` 函数返回后，使用 `FD_ISSET` 宏来测试 `fd_set` 数据类型中的描述符。描述符集内任何与未就绪描述符对应的位返回时均清成0。为此，**每次重新调用 `select` 函数时，都得再次把所有描述符集内所关心的位均置为 1**。
-- 使用 select 函数提高服务器的处理能力：
+- 使用 `select` 函数循环读取键盘输入：
 
-``` c
-fd_set client_fdset;
-FD_ZERO(&client_fdset);			
-FD_SET(serverfd, &client_fdset);		
-
-struct timeval tv;
-int client_sockfd[5];
-
-tv.tv_sec = 30;
-tv.yv_usec = 0;
-
-for (int i = 0; i < 5; ++i) {
-    if (client_sockfd[i] != 0)
-        FD_SET(client_sockfd[i], &client_fdset);
-}
-
-ret = select(maxsock+1, &client_fdset, NULL, NULL, &tv);
-if (ret < 0) {
-    printf("select error!\n");
-    break;
-}else if (ret == 0) {
-    printf("timeout!\n");
-    continue;
-}
-
-// 轮询各个文件描述符
-// 先看已经连上的 client 的 fd 有无可读数据，没有的话，要将相应的 client 关闭连接，并将它在集合里清掉
-// 然后检查是否有新的连接,如果有，建立接收连接，加入到 client_sockfd 中，发送一个消
-// 息给 client ，方便看到 client 已经连上了。并且，还需要把 maxsock 更新，因为下一次进入
-// while 循环调用 select 时，需要传当前最大的 fd 值＋1 给 select 函数
+``` c++
+#include <sys/time.h>  
+#include <stdio.h>  
+#include <sys/types.h>  
+#include <sys/stat.h>  
+#include <fcntl.h>  
+#include <assert.h>  
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <sys/select.h>
+int main(){
+	int keyboard; 
+	int ret,i; 
+	char c;
+	fd_set readfd;
+	struct timeval timeout;
+	keyboard = open("/dev/tty",O_RDONLY | O_NONBLOCK);		// 非阻塞地读取终端上的输入信息
+	assert(keyboard>0);
+	while(1) {
+		timeout.tv_sec=5;
+		timeout.tv_usec=0;
+		FD_ZERO(&readfd);
+		FD_SET(keyboard,&readfd);
+		ret=select(keyboard+1,&readfd,NULL,NULL,&timeout);
+		if (ret == -1)
+			perror("select error");
+		else if (ret){
+			if(FD_ISSET(keyboard,&readfd)){
+				i=read(keyboard,&c,1);
+				if('\n'==c)
+					continue;
+				printf("The input is %c\n",c);
+				if ('q'==c)
+					break;
+			}  
+               }else if (ret == 0)
+                   printf("time out\n");
+	}
+	return 0;
+}  
 ```
 
-- 如此，server 就能同时处理多个 client 的请求
+- 使用 `select` 函数提高服务器的处理能力，服务端代码：
 
-#### poll 函数
+``` c++
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <string.h>
+#include <errno.h>
+#define DEFAULT_PORT 6666
+int main( int argc, char ** argv){
+    int serverfd,acceptfd; /* 监听socket: serverfd,数据传输socket: acceptfd */
+    struct sockaddr_in my_addr; /* 本机地址信息 */
+    struct sockaddr_in their_addr; /* 客户地址信息 */
+    unsigned int sin_size, myport=6666, lisnum=10;
+    if ((serverfd = socket(AF_INET , SOCK_STREAM, 0)) == -1) {
+       perror("socket" );
+       return -1;
+    }
+    printf("socket ok \n");
+    my_addr.sin_family=AF_INET;
+    my_addr.sin_port=htons(DEFAULT_PORT);
+    my_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(my_addr.sin_zero), 0);
+    if (bind(serverfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr )) == -1) {
+        perror("bind" );
+        return -2;
+    }
+    printf("bind ok \n");
+    if (listen(serverfd, lisnum) == -1) {
+        perror("listen" );
+        return -3;
+    }
+    printf("listen ok \n");
+	
+	fd_set client_fdset;	/*监控文件描述符集合*/
+	int maxsock;            /*监控文件描述符中最大的文件号*/
+	struct timeval tv;		/*超时返回时间*/
+	int client_sockfd[5];   /*存放活动的sockfd*/
+	bzero((void*)client_sockfd,sizeof(client_sockfd));
+	int conn_amount = 0;    /*用来记录描述符数量*/
+	maxsock = serverfd;
+	char buffer[1024];
+	int ret=0;
+	while(1){
+		/*初始化文件描述符号到集合*/
+		FD_ZERO(&client_fdset);
+		/*加入服务器描述符*/
+		FD_SET(serverfd,&client_fdset);
+		/*设置超时时间*/
+		tv.tv_sec = 30; /*30秒*/
+		tv.tv_usec = 0;
+		/*把活动的句柄加入到文件描述符中*/
+        for(int i = 0; i < 5; ++i){
+            /*程序中Listen中参数设为5,故i必须小于5*/
+            if(client_sockfd[i] != 0){
+                FD_SET(client_sockfd[i], &client_fdset);
+            }
+         }
+		/*printf("put sockfd in fdset!\n");*/
+        /*select函数*/
+        ret = select(maxsock+1, &client_fdset, NULL, NULL, &tv);
+        if(ret < 0){
+            perror("select error!\n");
+            break;
+        }
+        else if(ret == 0){
+            printf("timeout!\n");
+            continue;
+        }
+        /*轮询各个文件描述符*/
+        for(int i = 0; i < conn_amount; ++i){
+            /*FD_ISSET检查client_sockfd是否可读写，>0可读写*/
+            if(FD_ISSET(client_sockfd[i], &client_fdset)){
+                printf("start recv from client[%d]:\n",i);
+                ret = recv(client_sockfd[i], buffer, 1024, 0);
+                if(ret <= 0){
+                    printf("client[%d] close\n", i);
+                    close(client_sockfd[i]);
+                    FD_CLR(client_sockfd[i], &client_fdset);
+                    client_sockfd[i] = 0;
+                }
+                else{
+                    printf("recv from client[%d] :%s\n", i, buffer);
+                }
+            }
+        }
+		/*检查是否有新的连接，如果收，接收连接，加入到client_sockfd中*/
+		if(FD_ISSET(serverfd, &client_fdset)){
+	    	/*接受连接*/
+	    	struct sockaddr_in client_addr;
+        	size_t size = sizeof(struct sockaddr_in);
+			int sock_client = accept(serverfd, (struct sockaddr*)(&client_addr),                                              (unsigned int*)(&size));
+            if(sock_client < 0){
+                perror("accept error!\n");
+                continue;
+            }
+			/*把连接加入到文件描述符集合中*/
+            if(conn_amount < 5){
+                client_sockfd[conn_amount++] = sock_client;
+                bzero(buffer,1024);
+                strcpy(buffer, "this is server! welcome!\n");
+                send(sock_client, buffer, 1024, 0);
+                printf("new connection client[%d] %s:%d\n", conn_amount,                                        inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                bzero(buffer,sizeof(buffer));
+                ret = recv(sock_client, buffer, 1024, 0);
+                if(ret < 0){
+                    perror("recv error!\n");
+                    close(serverfd);
+                    return -1;
+                }
+                printf("recv : %s\n",buffer);
+                if(sock_client > maxsock){
+                    maxsock = sock_client;
+                }
+                else{
+                    printf("max connections!!!quit!!\n");
+                    break;
+                }
+            }
+        }
+    }
+    for(int i = 0; i < 5; ++i){
+        if(client_sockfd[i] != 0){
+            close(client_sockfd[i]);
+        }
+    }
+    close(serverfd);
+    return 0;	
+}
+
+```
+
+- 客户端代码：
+
+``` c++
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#define DEFAULT_PORT 6666
+int main( int argc, char * argv[]){
+    int connfd = 0;
+    int cLen = 0;
+    struct sockaddr_in client;
+    if(argc < 2){
+        printf(" Uasge: clientent [server IP address]\n");
+        return -1;
+    }	
+    client.sin_family = AF_INET;
+    client.sin_port = htons(DEFAULT_PORT);
+    client.sin_addr.s_addr = inet_addr(argv[1]);
+    connfd = socket(AF_INET, SOCK_STREAM, 0);
+    if(connfd < 0){
+	    perror("socket" );
+        return -1;
+    }
+    if(connect(connfd, (struct sockaddr*)&client, sizeof(client)) < 0){
+ 	    perror("connect" );
+        return -1;
+    }
+	char buffer[1024];
+	bzero(buffer,sizeof(buffer));
+	recv(connfd, buffer, 1024, 0);
+	printf("recv : %s\n", buffer);
+	bzero(buffer,sizeof(buffer));
+	strcpy(buffer,"this is client!\n");
+	send(connfd, buffer, 1024, 0);
+	while(1){
+		bzero(buffer,sizeof(buffer));
+		scanf("%s",buffer);
+		int p = strlen(buffer);
+		buffer[p] = '\0';
+		send(connfd, buffer, 1024, 0);
+		printf("i have send buffer\n");
+	}
+	close(connfd);
+	return 0;
+}
+```
+
+- 如此，server 就能同时处理多个 client 的请求。
+
+### poll 函数
 
 - `poll` 函数原型：
 
 ``` c
+#include <poll.h>
+
 int poll(struct pollfd *fds, unsigned int nfds, int timeout);
 
 struct pollfd {
@@ -1707,55 +2097,619 @@ struct pollfd {
 };
 ```
 
-每一个 poll 结构体指定了一个被监视的文件描述符。每个结构体的 `events` 域是监视该文件描述符的事件掩码，由用户来设置这个域的属性 `revents` 是文件描述符的操作结果事件掩码，内核在调用返回时设置这个域。成功时，`poll ()` 返回结构体中 `revents` 域不为 0 的文件描述符个数：如果在超时前没有任何事件发生，`poll()` 返回 0； 失败时，`poll()` 返回 -1。
+每一个 `poll 结构体` 指定了一个被监视的文件描述符，可以传递多个结构体，指示 `poll()` 监视多个文件描述符。每个结构体的 `events` 域是监视该文件描述符的事件掩码，由用户来设置这个域的属性 `revents` 是文件描述符的操作结果事件掩码，内核在调用返回时设置这个域。成功时，`poll()` 返回结构体中 `revents` 域不为 0 的文件描述符个数：如果在超时前没有任何事件发生，`poll()` 返回 0； 失败时，`poll()` 返回 -1。
 
-- 使用 `poll` 函数提高服务器的处理能力
+| 事件分类 |     事件代码     |           意义           |
+| :------: | :--------------: | :----------------------: |
+|          |     `POLLIN`     |        有数据可读        |
+|          |   `POLLRDNORM`   |      有普通数据可读      |
+|          |   `POLLRDBAND`   |      有优先数据可读      |
+| 合法事件 |    `POLLPRI`     |      有紧迫数据可读      |
+|          |    `POLLOUT`     |    写数据不会导致阻塞    |
+|          |   `POLLWRNORM`   |  写普通数据不会导致阻塞  |
+|          |   `POLLWRBAND`   |  写优先数据不会导致阻塞  |
+|          | `POLLMSGSIGPOLL` |         消息可用         |
+|          |     `POLLER`     | 指定的文件描述符发生错误 |
+| 非法事件 |    `POLLHUP`     | 指定的文件描述符挂起事件 |
+|          |    `POLLNAVL`    |   指定的文件描述符非法   |
 
-``` c
-#define OPEN_MAX 100
-// 先把服务器的描述符加入到描述符集合中
-struct pollfd clientfds[OPEN_MAX];
+- `POLLIN | POLLPRI` 等价于 `select` 的读事件，`POLLOUT | POLLWRBAND` 等价于 `select()` 的写事件
+- 使用 `poll` 函数提高服务器的处理能力，服务端实现代码：
 
-clientfds[0].fd = listenfd;
-clientfds[0].fd = POLLIN;		// POLLI 有数据可读事件
+```c++
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <string.h>
+#include <errno.h>
+#include <poll.h>
+#define IPADDRESS   "127.0.0.1"
+#define PORT        6666
+#define MAXLINE     1024
+#define LISTENQ     5
+#define OPEN_MAX    1000
+#define INFTIM      -1
 
-// 接下来将数组初始化，注意别把第一个元素给覆盖了，因为第一个已添加了服务器描述符
-for (int i = 1; i < OPEN_MAX; ++i) {
-    clients[i].fd = -1;
+/*创建套接字,进行绑定和监听*/
+int bind_and_listen(){
+	int serverfd; /* 监听socket: serverfd*/
+    struct sockaddr_in my_addr; /* 本机地址信息 */
+    unsigned int sin_size;
+    if ((serverfd = socket(AF_INET , SOCK_STREAM, 0)) == -1) {
+       perror("socket" );
+       return -1;
+    }
+    printf("socket ok \n");	
+    my_addr.sin_family=AF_INET;
+    my_addr.sin_port=htons(PORT);
+    my_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(my_addr.sin_zero), 0);
+    if (bind(serverfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr )) == -1) {
+        perror("bind" );
+        return -2;
+    }
+    printf("bind ok \n");
+    if (listen(serverfd, LISTENQ) == -1) {
+        perror("listen" );
+        return -3;
+    }
+    printf("listen ok \n");
+	return serverfd;
 }
 
-// 接着是 while 循环，查看是否有新客户端连接，或者老客户端是否有数据发送过来
-// 这里的超时时间设为 -1 ，表示无限超时，使 poll() 一直挂起直到一个指定事件发生
-int maxi = 0;
-while (1) {
-    nready = poll(clientfds, maxi+1, INFTIM);
-    ...
-        
-    // 当有新的客户端连接时，必须接受，获得新的 fd，并将新 fd 放到数组中
-        
-    // 还需要处理已连接上来的客户端有可指发来的包
+/*IO多路复用poll*/
+void do_poll(int listenfd){
+    int  connfd,sockfd;
+    struct sockaddr_in cliaddr;
+    socklen_t cliaddrlen;
+    struct pollfd clientfds[OPEN_MAX];
+    int maxi;
+    int i;
+    int nready;
+    /*添加监听描述符*/
+    clientfds[0].fd = listenfd;
+    clientfds[0].events = POLLIN;
+    /* 初始化客户连接描述符，注意别把第一个元素给覆盖了，因为第一个已添加了服务器描述符*/
+    for (i = 1;i < OPEN_MAX;i++)
+        clientfds[i].fd = -1;
+    maxi = 0;
+    
+    // 接着是 while 循环，查看是否有新客户端连接，或者老客户端是否有数据发送过来
+	// 这里的超时时间设为 -1 ，表示无限超时，使 poll() 一直挂起直到一个指定事件发生
+    while(1){
+        /*获取可用描述符的个数*/
+        nready = poll(clientfds,maxi+1,INFTIM);
+        if (nready == -1){
+            perror("poll error:");
+            exit(1);
+        }
+        /*测试监听描述符是否准备好*/
+        if (clientfds[0].revents & POLLIN){
+            cliaddrlen = sizeof(cliaddr);
+            /* 接受新的连接 */
+       		if((connfd=accept(listenfd,(struct sockaddr*)&cliaddr,&cliaddrlen))==-1){
+                if (errno == EINTR)
+                    continue;
+                else{
+                    perror("accept error:");
+                    exit(1);
+                }
+            }
+			fprintf(stdout,"accept a new client: %s:%d\n", inet_ntoa(cliaddr.sin_addr), 					cliaddr.sin_port);
+       		/*将新的连接描述符添加到数组中*/
+            for (i = 1;i < OPEN_MAX;i++){
+                if (clientfds[i].fd < 0){
+                    clientfds[i].fd = connfd;
+                    break;
+                }
+            }
+            if (i == OPEN_MAX){
+                fprintf(stderr,"too many clients.\n");
+                exit(1);
+            }
+            /*将新的描述符添加到读描述符集合中*/
+            clientfds[i].events = POLLIN;
+            /*记录客户连接套接字的个数*/
+            maxi = (i > maxi ? i : maxi);
+            if (--nready <= 0)
+                  continue;
+        }
+        /*处理多个已有连接上客户端发来的包*/
+        char buf[MAXLINE];
+        memset(buf,0,MAXLINE);
+        int readlen=0;
+        for (i = 1; i <= maxi; i++){
+            if (clientfds[i].fd < 0)
+                continue;
+            /*测试客户描述符是否准备好*/
+            if (clientfds[i].revents & POLLIN){
+                /*接收客户端发送的信息*/
+                readlen = read(clientfds[i].fd,buf,MAXLINE);
+                if (readlen == 0){
+                    close(clientfds[i].fd);
+                    clientfds[i].fd = -1;
+                    continue;
+                }
+                /*printf("read msg is: ");*/
+                write(STDOUT_FILENO,buf,readlen);
+                /*向客户端发送buf*/
+                write(clientfds[i].fd,buf,readlen);
+            }
+        }
+    }
 }
+int main(int argc,char *argv[]){
+    int  listenfd=bind_and_listen();
+	if(listenfd<0){
+	    return 0;
+	}
+    do_poll(listenfd);
+    return 0;
+}
+```
+
+- 客户端实现代码：
+
+``` c++
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <string.h>
+#include <errno.h>
+#include <poll.h>
+#define MAXLINE     1024
+#define DEFAULT_PORT   6666
+#define max(a,b) (a > b) ? a : b
+static void handle_connection(int sockfd);
+int main(int argc,char *argv[]){
+	int connfd = 0;
+    int cLen = 0;
+    struct sockaddr_in client;
+    if(argc < 2){
+        printf(" Uasge: clientent [server IP address]\n");
+        return -1;
+    }	
+    client.sin_family = AF_INET;
+    client.sin_port = htons(DEFAULT_PORT);
+    client.sin_addr.s_addr = inet_addr(argv[1]);
+    connfd = socket(AF_INET, SOCK_STREAM, 0);
+    if(connfd < 0){
+		perror("socket" );
+        return -1;
+    }
+    if(connect(connfd, (struct sockaddr*)&client, sizeof(client)) < 0){
+ 		perror("connect" );
+        return -1;
+    }
+    /*处理连接描述符*/
+    handle_connection(connfd);
+    return 0;
+}
+static void handle_connection(int sockfd){
+    char    sendline[MAXLINE],recvline[MAXLINE];
+    int     maxfdp,stdineof;
+    struct pollfd pfds[2];
+    int n;
+    /*添加连接描述符*/
+    pfds[0].fd = sockfd;
+    pfds[0].events = POLLIN;
+    /*添加标准输入描述符*/
+    pfds[1].fd = STDIN_FILENO;
+    pfds[1].events = POLLIN;
+    while(1){
+        poll(pfds,2,-1);
+        /* 测试服务器是否发来了包 */
+        if (pfds[0].revents & POLLIN){
+            n = read(sockfd,recvline,MAXLINE);
+            if (n == 0){
+                    fprintf(stderr,"client: server is closed.\n");
+                    close(sockfd);
+            }
+            write(STDOUT_FILENO,recvline,n);
+        }
+        /* 测试标准输入是否有输入 */
+        if (pfds[1].revents & POLLIN) {
+            n = read(STDIN_FILENO,sendline,MAXLINE);
+            if (n  == 0) {
+                shutdown(sockfd,SHUT_WR);
+				continue;
+            }
+            write(sockfd,sendline,n);
+        }
+    }
+}
+
 ```
 
 - `poll` 函数也能让服务器具备同时处理多个客户端请求的能力。
 
-#### epoll 函数
+### epoll 函数
 
-- 相对于 `select` 和 `poll` 来说， `epoll` 更加灵活，没有描述符限制；
-- `epoll` 使用一个文件描述符管理多个描述符，将用户关系的文件描述符的事件存放到内核的一个事件表中，这样在用户空间和内核空间之间的数据拷贝只需一次
+- 相对于 `select` 和 `poll` 来说， `epoll` 更加灵活，**没有描述符限制**；
+- `epoll` 使用一个文件描述符管理多个描述符，将用户关系的文件描述符的事件存放到内核的一个事件表中，这样 **在用户空间和内核空间之间的数据拷贝只需一次**。
+- `epoll` 函数接口：
 
-#### select、poll、epoll 的区别
+``` c++
+#include <sys/epoll.h>
+
+int epoll_create(int size);
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
+```
+
+- 三个接口的功能、入参和出参的含义：
+
+  - `epoll_create` 创建一个 `epoll` 句柄，`size` 用来告诉内核要监听的数目。需要注意的是，当创建好 `epoll` 句柄后，它就会占用一个 `fd` 值，在 Linux 下如果查看 /proc/ 进程的 id/fd/ ，是能够看到这个 `fd` 值的，所以在使用 `poll` 后，必须调用 `close()` 关闭，否则可能导致 `fd` 被耗尽；
+  - `epoll_ctl` 是 `epoll` 的事件注册函数，它不同于 `select` 在监听事件时告诉内核要监听什么类型的事件，而是先注册要监听的事件类型。第一个参数是 `epoll_create()` 的返回值，第二个参数表示动作，用 3 个宏来表示：① `EPOLL_CTL_ADD`，注册新的 `fd` 到 `epfd` 中；② `EPOLL_CTL_MOD` ，修改已经注册的 `fd` 的监昕事件；③ `EPOLL_ CTL DEL` ：从 `epfd` 中删除一个 `fd`；第 3 个参数是需要监听的 `fd`，第 4 个参数是告诉内核需要监听什么事， `struct epoll_event` 结构如下：
+
+  ``` c++
+  struct epoll_event {
+      _uint32_t events;
+      epoll_data_t data;
+  }
+  ```
+
+  ​		`events` 包括：`EPOLLIN`、`EPOLLOUT`、`EPOLLPRI`、`EPOLLERR`、`EPOLLHUP`、`EPOLLET`。
+
+  - `epoll_wait` 用来等待事件的发生。
+
+- 用 `epoll` 提高服务器分处理能力，服务端代码：
+
+``` c++
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+#include <sys/types.h>
+
+#define IPADDRESS   "127.0.0.1"
+#define PORT        6666
+#define MAXSIZE     1024
+#define LISTENQ     5
+#define FDSIZE      1000
+#define EPOLLEVENTS 100
+
+/*函数声明*/
+/*创建套接字并进行绑定*/
+int socket_bind(const char* ip,int port);
+/*IO多路复用epoll*/
+void do_epoll(int listenfd);
+/*事件处理函数*/
+void handle_events(int epollfd,struct epoll_event *events,int num,int listenfd,char *buf);
+/*处理接收到的连接*/
+void handle_accpet(int epollfd,int listenfd);
+/*读处理*/
+void do_read(int epollfd,int fd,char *buf);
+/*写处理*/
+void do_write(int epollfd,int fd,char *buf);
+/*添加事件*/
+void add_event(int epollfd,int fd,int state);
+/*修改事件*/
+void modify_event(int epollfd,int fd,int state);
+/*删除事件*/
+void delete_event(int epollfd,int fd,int state);
+
+int main(int argc,char *argv[]){
+    int  listenfd;
+    listenfd = socket_bind(IPADDRESS,PORT);
+    listen(listenfd,LISTENQ);
+    do_epoll(listenfd);
+    return 0;
+}
+
+int socket_bind(const char* ip,int port){
+    int  listenfd;
+    struct sockaddr_in servaddr;
+    listenfd = socket(AF_INET,SOCK_STREAM,0);
+    if (listenfd == -1){
+        perror("socket error:");
+        exit(1);
+    }
+    bzero(&servaddr,sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    inet_pton(AF_INET,ip,&servaddr.sin_addr);
+    servaddr.sin_port = htons(port);
+    if (bind(listenfd,(struct sockaddr*)&servaddr,sizeof(servaddr)) == -1){
+        perror("bind error: ");
+        exit(1);
+    }
+    return listenfd;
+}
+
+void do_epoll(int listenfd){
+    int epollfd;
+    struct epoll_event events[EPOLLEVENTS];
+    int ret;
+    char buf[MAXSIZE];
+    memset(buf,0,MAXSIZE);
+    /*创建一个描述符*/
+    epollfd = epoll_create(FDSIZE);
+    /*添加监听描述符事件*/
+    add_event(epollfd,listenfd,EPOLLIN);
+    while(1){
+        /*获取已经准备好的描述符事件*/
+        ret = epoll_wait(epollfd,events,EPOLLEVENTS,-1);
+        handle_events(epollfd,events,ret,listenfd,buf);
+    }
+    close(epollfd);
+}
+
+void handle_events(int epollfd,struct epoll_event *events,int num,int listenfd,char *buf){
+    int i;
+    int fd;
+    /*进行遍历*/
+    for (i = 0;i < num;i++){
+        fd = events[i].data.fd;
+        /*根据描述符的类型和事件类型进行处理*/
+        if ((fd == listenfd) &&(events[i].events & EPOLLIN))
+            handle_accpet(epollfd,listenfd);
+        else if (events[i].events & EPOLLIN)
+            do_read(epollfd,fd,buf);
+        else if (events[i].events & EPOLLOUT)
+            do_write(epollfd,fd,buf);
+    }
+}
+
+void handle_accpet(int epollfd,int listenfd){
+    int clifd;
+    struct sockaddr_in cliaddr;
+    socklen_t  cliaddrlen;
+    clifd = accept(listenfd,(struct sockaddr*)&cliaddr,&cliaddrlen);
+    if (clifd == -1)
+        perror("accpet error:");
+    else{
+        printf("accept a new client:                                                                     %s:%d\n",inet_ntoa(cliaddr.sin_addr),cliaddr.sin_port);
+        /*添加一个客户描述符和事件*/
+        add_event(epollfd,clifd,EPOLLIN);
+    }
+}
+
+void do_read(int epollfd,int fd,char *buf){
+    int nread;
+    nread = read(fd,buf,MAXSIZE);
+    if (nread == -1){
+        perror("read error:");
+        close(fd);
+        delete_event(epollfd,fd,EPOLLIN);
+    }
+    else if (nread == 0){
+        fprintf(stderr,"client close.\n");
+        close(fd);
+        delete_event(epollfd,fd,EPOLLIN);
+    }
+    else{
+        printf("read message is : %s",buf);
+        /*修改描述符对应的事件，由读改为写*/
+        modify_event(epollfd,fd,EPOLLOUT);
+    }
+}
+
+void do_write(int epollfd,int fd,char *buf){
+    int nwrite;
+    nwrite = write(fd,buf,strlen(buf));
+    if (nwrite == -1){
+        perror("write error:");
+        close(fd);
+        delete_event(epollfd,fd,EPOLLOUT);
+    }
+    else
+        modify_event(epollfd,fd,EPOLLIN);
+    memset(buf,0,MAXSIZE);
+}
+
+void add_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_ADD,fd,&ev);
+}
+
+void delete_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_DEL,fd,&ev);
+}
+
+void modify_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_MOD,fd,&ev);
+}
+```
+
+- 客户端代码：
+
+``` c++
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
+
+#define MAXSIZE     1024
+#define IPADDRESS   "127.0.0.1"
+#define SERV_PORT   6666
+#define FDSIZE        1024
+#define EPOLLEVENTS 20
+
+void handle_connection(int sockfd);
+void handle_events(int epollfd,struct epoll_event *events,int num,int sockfd,char *buf);
+void do_read(int epollfd,int fd,int sockfd,char *buf);
+void do_read(int epollfd,int fd,int sockfd,char *buf);
+void do_write(int epollfd,int fd,int sockfd,char *buf);
+void add_event(int epollfd,int fd,int state);
+void delete_event(int epollfd,int fd,int state);
+void modify_event(int epollfd,int fd,int state);
+int count=0;
+int main(int argc,char *argv[]){
+    int                 sockfd;
+    struct sockaddr_in  servaddr;
+    sockfd = socket(AF_INET,SOCK_STREAM,0);
+    bzero(&servaddr,sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(SERV_PORT);
+    inet_pton(AF_INET,IPADDRESS,&servaddr.sin_addr);
+    connect(sockfd,(struct sockaddr*)&servaddr,sizeof(servaddr));
+    /*处理连接*/
+    handle_connection(sockfd);
+    close(sockfd);
+    return 0;
+}
+
+void handle_connection(int sockfd){
+    int epollfd;
+    struct epoll_event events[EPOLLEVENTS];
+    char buf[MAXSIZE];
+    int ret;
+    epollfd = epoll_create(FDSIZE);
+    add_event(epollfd,STDIN_FILENO,EPOLLIN);
+    while (1 ) {
+        ret = epoll_wait(epollfd,events,EPOLLEVENTS,-1);
+        handle_events(epollfd,events,ret,sockfd,buf);
+    }
+    close(epollfd);
+}
+
+void handle_events(int epollfd,struct epoll_event *events,int num,int sockfd,char *buf){
+    int fd;
+    int i;
+    for (i = 0;i < num;i++){
+        fd = events[i].data.fd;
+        /* 客户端需要关注三种状态：标准输入、服务器发来了数据、标准输出*/
+        if (events[i].events & EPOLLIN)				// 标准输入或服务器发来了数据
+            do_read(epollfd,fd,sockfd,buf);
+        else if (events[i].events & EPOLLOUT)		// 标准输出
+            do_write(epollfd,fd,sockfd,buf);
+    }
+}
+
+void do_read(int epollfd,int fd,int sockfd,char *buf){
+    int nread;
+    nread = read(fd,buf,MAXSIZE);
+    if (nread == -1){
+        perror("read error:");
+        close(fd);
+    }
+    else if (nread == 0){
+        fprintf(stderr,"server close.\n");
+        close(fd);
+    }
+    else{
+        // 标准输入
+        if (fd == STDIN_FILENO)
+            add_event(epollfd,sockfd,EPOLLOUT);
+        else{	// 服务器发来了消息
+            delete_event(epollfd,sockfd,EPOLLIN);
+            add_event(epollfd,STDOUT_FILENO,EPOLLOUT);
+        }
+    }
+}
+
+void do_write(int epollfd,int fd,int sockfd,char *buf){
+    int nwrite;
+    char temp[100];
+	buf[strlen(buf)-1]='\0';
+	snprintf(temp,sizeof(temp),"%s_%02d\n",buf,count++);
+    nwrite = write(fd,temp,strlen(temp));   
+    if (nwrite == -1){
+        perror("write error:");
+        close(fd);
+    }
+    else{
+        if (fd == STDOUT_FILENO)
+            delete_event(epollfd,fd,EPOLLOUT);
+        else
+            modify_event(epollfd,fd,EPOLLIN);
+    }
+    memset(buf,0,MAXSIZE);
+}
+
+void add_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_ADD,fd,&ev);
+}
+
+void delete_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_DEL,fd,&ev);
+}
+
+void modify_event(int epollfd,int fd,int state){
+    struct epoll_event ev;
+    ev.events = state;
+    ev.data.fd = fd;
+    epoll_ctl(epollfd,EPOLL_CTL_MOD,fd,&ev);
+}
+```
+
+### 描述符就绪条件
+
+#### 套接字准备好读
+
+- 该套接字接收缓冲区中的数据字节数大于等于套接字接收缓冲区 **低水位标记** 的当前大小
+- 该连接的读半部关闭（也就是接收了 FIN 的TCP 连接），对这样的套接字的读操作将不阻塞并返回 0；
+- 该套接字是一个监听套接字且已完成的连接数不为 0；
+- 其上有一个套接字错误待处理；
+
+#### 套接字准备好写
+
+- 该套接字发送缓冲区中的可用空间字节数大于等于套接字发送缓冲区 **低水位标记** 的当前大小，并且或者该套接字已连接，或者该套接字不需要连接（UDP套接字）；
+- 该连接的写半部关闭，对这样的套接字的写操作将产生 `SIGPIPE 信号`。
+
+接收低水位标记和发送高水位标记的目的在于：**允许应用进程控制在 `select` 返回可读或可写条件之前有多少数据可读或有多大空间可用于写**。举例来说：如果我们知道除非至少存在 64 个字节的数据，否则应用进程没有任何有效工作可做，那么就可以把接收低水位标记设置为 64。
+
+### select、poll、epoll 的区别
 
 - `select`、`poll` 和 `epoll` 都是 **多路 IO 复用** 的机制；多路 IO 复用就通过这种机制，可以监视多个描述符， 一旦某个描述符就绪（一般是读就绪或者写就绪），能够通知程序进行相应的读写操作；
-- `select`、`poll` 和 `epoll` 本质上都是 **同步 IO**，因为它们都需要在读写事件就绪后自己负责进行读写，即是**阻塞的**；
+- `select`、`poll` 和 `epoll` 本质上都是 **同步 IO**，因为它们都需要在读写事件就绪后自己负责进行读写，即是**阻塞的**，而异步 IO 则无须自己负责读写，异步 IO 的实现会把数据从内核拷贝到用户空间；
 - `select` 和 `poll`：
   - 一般认为 `poll()` 比 `select()` 要高级一些；
   - `poll()` 不要求开发者在计算最大文件描述符时进行 +1 的操作；
-  - `poll()` 在应付大数目的文件描述符的时候速度更快，因为对于 `select()` 来说内核需要检查大量描述符对应的 `fd_set` 中的每一个比特位，比较费时；
-  - `select()`）可以监控的文件描述符数目是固定的，相对来说也较少 (1024或2048)。如果需要监控数值比较大的文件描述符，或是分布得很稀疏的较少的描述符，效率也会很低。而对于 `poll()` 函数来说，可以创建特定大小的数组来保存监控的描述符，而不受文件描述符值大小的影响，而且 `poll()` 可以监控的文件数远大于 `select()`；
-  - 对于 `select()` 来说，所监控的 `fd_set` 在 `select()` 返回之后会发生变化，所以在下一次进入 `select()` 之前都需要重新初始化需要监控的 `fd_set`；`poll()` 函数将监控的输入和输出事件分开，允许被监控的文件数组被复用而不需要重新初始化；
+  - `poll()` 在应付大数目的文件描述符的时候速度更快，因为对于 `select()` 来说 **内核需要检查大量描述符对应的 `fd_set` 中的每一个比特位，比较费时**；
+  - `select()`）可以监控的文件描述符数目是固定的，相对来说也较少 (1024或2048)。如果需要监控数值比较大的文件描述符，或是 **分布得很稀疏的较少的描述符**，效率也会很低。而对于 `poll()` 函数来说，可以创建特定大小的数组来保存监控的描述符，而不受文件描述符值大小的影响，而且 `poll()` 可以监控的文件数远大于 `select()`；
+  - 对于 `select()` 来说，所监控的 `fd_set` 在 `select()` 返回之后会发生变化，所以在下一次进入 `select()` 之前都需要重新初始化需要监控的 `fd_set`；`poll()` 函数将监控的输入 `events` 和输出事件 `revents` 分开，允许被监控的文件数组被复用而不需要重新初始化；
   - `select()` 函数的超时参数在返回时也是未定义的，考虑到可移植性，每次在超时之后在下一次进入到 `select()` 之前都需要重新设置超时参数。
 - `epoll()` 的优点：
   - 支持一个进程打开大数目的描述符；
+  
   - IO 效率不随描述符数目增加而线性下降；`select/poll` 每次调用都会 **线性扫描全部的描述符**，导致效率呈现线性下降，但是 `epoll` 不存在这个问题，它只会对“活跃”的 `socket` 进行操作，这是因为在内核中实现 `poll` 是根据每个描述符 `fd` 上面的 `callback` 函数实现的。那么，只有“活跃”的 `socket` 才会主动去调用 `callback` 函数，其他 `idle` 状态的 socket 则不会。
-  - 使用 `mmap` 加速内核与用户空间的消息传递。
+  
+  - 使用 `mmap` 加速内核与用户空间的消息传递。无论是 `select`、`poll` 还是 `epoll` 需要内核把 `fd` 消息通知给用户空间，如何避免不必要的内存拷贝就显得尤为重要。在这点上，**`epoll` 是通过内核与用户空间 `mmap` 处于同一块内存实现的**。
+  
+    对于 `poll` 来说需要将用户传入的 `pollfd` 数组拷贝到内核 间，因为拷贝操作和数组长度相关，时间上来看，这是 $O(n)$ 操作，当事件发生后，`poll` 将获得的数据传送到用户空间，并执行释放内存和剥离等待队列等工作，向用户空间拷贝数据与剥离等待队列等操作的时间复杂度同样是 $O(n)$
+  
+  - `epoll` 有 **EPOLLLT** 和 **EPOLLET** 两种触发模式，LT 是默认的模式，ET 是“高速”模式
+  
+    - LT 模式下，只要这个 `fd` 还有数据可读，每次 `epoll_wait` 都会返回它的事件，提醒用户程序去操作；
+    - ET（边缘触发）模式中，它只会提示一次，直到下次再有数据流入之前都不会再提示了，无论 `fd` 中是否还有数据可读。所以在 ET 模式下，读一个 `fd` 的时候一定要把它的 buffer 读光，也就是说一直读到 read 的返回值小于请求值;
+    - 如果采用 LT 模式的话，系统中一旦有大量你不需要读写的就绪文件描述符，它们每次调 `epoll_wait` 都会返回，这样会大大降低处理程序检索自己关心的就绪文件描述符的效率；而 ET 模式下，系统不会充斥大量你不关心的就绪文件描述符；
+
