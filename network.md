@@ -1318,13 +1318,13 @@ cat /proc/sys/net/ipv4/tcp_abort_on_overflow
 
 #####  close 函数和 shutdown 函数有什么区别
 
-调⽤了 `close 函数` 意味着 **完全断开连接**，完全断开不仅指⽆法传输数据，⽽且也不能发送数据。 此时，调用了`close 函数` 的⼀⽅的连接叫做「孤儿连接」。
+- 调用 `close` 函数会将套接字描述符的引用计数减 1，如果减 1 后，引用计数值仍大于 0，这个 `close` 调用并不引发 TCP 的四分组连接终止序列，对于子进程与父进程共享已连接套接字的并发服务器来说，这是期望的
+- 调⽤了 `close 函数` 意味着 **完全断开连接**，完全断开不仅指⽆法传输数据，⽽且也不能发送数据。 此时，调用了`close 函数` 的⼀⽅的连接叫做「孤儿连接」。
 
-`shutdown 函数`，它可以控制只关闭⼀个⽅向的连接：
-
-- SHUT_RD(0)：**关闭连接的「读」这个⽅向**，如果接收缓冲区有已接收的数据，则将会被丢弃，并且后续再收到新的数据，会对数据进⾏ ACK，然后悄悄地丢弃。也就是说，对端还是会接收到 ACK，在这种情况下根本不知道数据已经被丢弃了；
-- SHUT_WR(1)：**关闭连接的「写」这个⽅向**，这就是常被称为「半关闭」的连接。如果发送缓冲区还有未发送的数据，将被⽴即发送出去，并发送⼀个 FIN 报⽂给对端；
-- SHUT_RDWR(2)：相当于 SHUT_RD 和 SHUT_WR 操作各⼀次，**关闭套接字的读和写两个方向**。
+- `shutdown 函数`，它可以控制只关闭⼀个⽅向的连接：
+  - SHUT_RD(0)：**关闭连接的「读」这个⽅向**，如果接收缓冲区有已接收的数据，则将会被丢弃，并且后续再收到新的数据，会对数据进⾏ ACK，然后悄悄地丢弃。也就是说，对端还是会接收到 ACK，在这种情况下根本不知道数据已经被丢弃了；
+  - SHUT_WR(1)：**关闭连接的「写」这个⽅向**，这就是常被称为「半关闭」的连接。如果发送缓冲区还有未发送的数据，将被⽴即发送出去，并发送⼀个 FIN 报⽂给对端；
+  - SHUT_RDWR(2)：相当于 SHUT_RD 和 SHUT_WR 操作各⼀次，**关闭套接字的读和写两个方向**。
 
 ##### FIN_WAIT1 状态的优化
 
@@ -1348,12 +1348,14 @@ Linux 提供了 `tcp_max_tw_buckets` 参数，当 `TIME_WAIT` 的连接数量超
 
 ### 3.10、一个简单的 UDP socket 回射程序
 
+- 大多数 TCP 服务器是并发的，大多数 UDP 服务器是迭代的；
+
 - `recvfrom` 和 `sendto` 函数原型：
 
 ``` c++
 #include <sys/socket.h>
 
-ssize_t recvfrom(int sockfd, void *buff, size_t nbytes, int flags
+ssize_t recvfrom(int sockfd, void *buff, size_t nbytes, int flags,
                  struct sockaddr *from, socklen_t *addrlen);
 
 ssize_t sendto(int sockfd, void *buff, ssize_t nbytes, int flags,
