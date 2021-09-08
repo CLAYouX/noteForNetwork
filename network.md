@@ -305,7 +305,7 @@ QUIC 协议也有类似 HTTP/2 Stream 与多路复⽤的概念，也是可以在
 
 由于 QUIC 使⽤的传输协议是 UDP，UDP 不关⼼数据包的顺序，如果数据包丢失，UDP 也不关⼼。
 
-但 QUIC 协议会保证数据包的可靠性，每个数据包都有⼀个序号唯⼀标识。当某个流中的⼀个数据包丢失了，即使该流的其他数据包到达了，数据也⽆法被 HTTP/3 读取，直到 QUIC ᯿传丢失的报⽂，数据才会交给 HTTP/3。⽽其他流的数据报⽂只要被完整接收，HTTP/3 就可以读取到数据。这与 HTTP/2 不同，HTTP/2 只要某个流中的数据包丢失了，其他流也会因此受影响。
+但 QUIC 协议会保证数据包的可靠性，每个数据包都有⼀个序号唯⼀标识。当某个流中的⼀个数据包丢失了，即使该流的其他数据包到达了，数据也⽆法被 HTTP/3 读取，直到 QUIC 重传丢失的报⽂，数据才会交给 HTTP/3。⽽其他流的数据报⽂只要被完整接收，HTTP/3 就可以读取到数据。这与 HTTP/2 不同，HTTP/2 只要某个流中的数据包丢失了，其他流也会因此受影响。
 
 所以，**QUIC 连接上的多个 Stream 之间并没有依赖，都是独⽴的**，某个流发⽣丢包了，只会影响该流，其他流不受影响。
 
@@ -975,9 +975,15 @@ struct in_addr {
 
 通常服务器启动时都会绑定一个众所周知的地址，用于提供服务；而客户端就不用指定，在 `connect()` 时由系统自动分配一个端口号和自身的 IP 地址组合。
 
+进程可以把一个特定的 IP 地址捆绑到它的套接字上。对于 TCP 客户，这就为在该套接字上发送的 IP 数据报指派了源 IP 地址。对于 TCP 服务器，这就限定该套接字只接收那些目的地为这个 IP 地址的客户连接。
+
 函数执行成功返回值为 `0`，反之为 `SOCKET_ERROR, -1`。
 
-##### listen 时参数 backlog 的意义
+##### listen 函数
+
+- `listen` 函数 **仅由 TCP 服务器调用**，他做两件事情：
+  - 当 `socket` 函数创建一个套接字时，他被假设为一个主动套接字，即是一个将调用 `connect` 发起连接的客户套接字。`listen` 函数把一个未连接的套接字转换成一个被动套接字。调用 `listen` 导致套接字从 `CLOSED` 状态转换到 `LISTEN` 状态；
+- 第二个参数规定了内核应该为相应套接字排队的最大连接个数。
 
 Linux 内核会维护两个队列：
 
@@ -996,6 +1002,8 @@ int listen(int socketfd, int backlog)
 
 现在通常认为 `backlog` 是 `accept` 队列。
 
+- 在三路握手完成之后，但在服务器调用 `accept` 之前到达的数据应由服务器 TCP 排队，最大数据量为相应已连接套接字的接收缓冲区大小。
+
 ##### connect 函数
 
 函数原型如下：
@@ -1007,9 +1015,10 @@ int connect(int sockfd, const strucr sockaddr *addr, socklen_t addrlen);
 - `addr` ：服务器的 `socket` 地址；
 - 客户端在调用 `connect` 前不必非得调用 `bind` 函数，因为如果需要的话，内核会确定源 IP 地址，并选择一个临时端口作为源端口；
 - 调用 `connect` 将激发 TCP 的三路握手过程，仅在连接建立成功或出错时才返回；出错返回的情况可能包括以下集中：
-  - TCP 客户没有收到 SYN 分解的响应，返回 `ETIMEDOUT` 错误。
+  - TCP 客户没有收到 SYN 分节的响应，返回 `ETIMEDOUT` 错误。
   - 对客户的SYN的响应是 RST，则表明该服务器主机上在我们指定端口上没有进程在等待与之连接，这是一个 **硬错误**， 返回 `ECONNREFUSED` 错误；
   - 客户发出的 SYN 在中间的某个路由器上引发了一个 ”destination unreachable" ICMP 错误，这是一种 **软错误**。按第一种情况重发，若超过规定时间后，则返回 `EHOSTUNREACH` 或 `ENETUNREACH` 错误。
+- `connect` 函数导致当前套接字从 `CLOSED` 状态转移到 `SYN_SENT` 状态，若成功则转移到 `ESTABLISHED` 状态。
 
 ##### accept 函数
 
@@ -1037,7 +1046,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 
 由上图可知，客户端 `connect` 成功返回是在 **第⼆次握⼿**，服务端 `accept` 成功返回是在 **三次握⼿成功** 之后。
 
-- `accept` 返回的是一个已连接的 `socket 描述字`，与服务器端调用 `socket` 函数得到的 `sockfd` 不同
+- `accept` 返回的是一个已连接的 `socket描述字 connfd`，与服务器端调用 `socket` 函数得到的 `sockfd` 不同。
 
 ##### read/write 函数
 
@@ -1064,7 +1073,10 @@ ssize_t write(int fd, const void *buf, size_t count);
 int close(int sockfd);
 ```
 
-- 调用 `close` 函数会将套接字描述符的引用计数减 1，如果减 1 后，引用计数值仍大于 0，这个 `close` 调用并不引发 TCP 的四分组连接终止序列，对于子进程与父进程共享已连接套接字的并发服务器来说，这是期望的。
+- 调用 `close` 函数会将套接字描述符的引用计数减 1，如果减 1 后，引用计数值仍大于 0，这个 `close` 调用并不引发 TCP 的四分组连接终止序列，对于子进程与父进程共享已连接套接字的并发服务器来说，这是期望的；
+- 在并发服务器中，如果父进程对每个由 `accept` 返回的已连接套接字都不调用 `close`，会发生：
+  - 父进程最终将耗尽可用描述符，因为任何进程在任何时刻可拥有的打开着的描述符数通常是有限制的；
+  - 没有一个客户连接会被终止。当子进程关闭已连接套接字时，它的引用计数将由 2 递减为 1 且保持为 1，浙江妨碍 TCP 连接终止序列的发生，导致连接一直打开着。
 
 ##### 并发服务器
 
@@ -1094,6 +1106,7 @@ int close(int sockfd);
 #include<sys/types.h>
 #include<sys/socket.h>
 #include<netinet/in.h>
+#include<arpa/inet.h>
 #include<unistd.h>
 
 #define MAXLINE 4096
@@ -1104,8 +1117,8 @@ int main(int argc, char **argv) {
     char buff[4096];
     int n;
     
-    if ( (listenfd = socket(AP_INET, SOCK_STREAM, 0)) == -1) {
-        print();
+    if ( (listenfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        print("create socket error: %s(errno：%d)\n", strerror(errno), errno);
         return 0;
     } 
     
@@ -1115,24 +1128,27 @@ int main(int argc, char **argv) {
     servaddr.sin_port = htons(6666);
     
     if ( bind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) == -1) {
-        printf();
+        printf("bind socket error: %s(errno: %d)\n", strerror(errno), errno);
         return 0;
     }
     
     if (listen(listenfd, 10) == -1) {
-        printf();
+        printf("listen socket error: %s(errno: %d)\n", strerror(errno), errno);
         return 0;
     }
     
     printf("=======waiting for client's request=======\n");
     while(1) {
-        if ( (connfd = accept(listenfd, (struct sockaddr*)&NULL, NULL)) == -1) {
-            printf();
+        struct sockaddr_in cliaddr;
+        size_t size = sizeof(struct socklen_t);
+        if ( (connfd = accept(listenfd, (struct sockaddr*)&cliaddr, (unsigned                           int*)&size)) == -1) {
+            printf("accept socket error: %s(errno: %d)\n", strerror(errno), errno);
             continue;
         }
+        printf("new connection client %s:%d\n", inet_ntoa(cliaddr.sin_addr),                            ntohs(cliaddr.sin_port));
         n = recv(connfd, buff, MAXLINE, 0);
         buff[n] = '\0';
-        printf("resv msg form client: %s\n", buff);
+        printf("resv msg from client: %s\n", buff);
         close(connfd);
     }
     close(connfd);
@@ -1161,12 +1177,12 @@ int main(int argc, char **argv) {
     struct sockaddr_in servaddr;
     
     if (argc != 2) {
-        printf();
+        printf("usage: ./client <ipaddress>\n");
         return 0;
     }
     
     if ( (sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf();
+        printf("create socket error: %s(errno：%d)\n", strerror(errno), errno);
         return 0;
     }
     
@@ -1174,19 +1190,19 @@ int main(int argc, char **argv) {
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(6666);
     if ( inet_pton(AF_INET, argv[1], &servaddr.sin_addr) <= 0) {
-        printf();
+        printf("inet_pton error for %s\n", argv[1]);
         return 0;
     }
     
     if ( connect(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) < 0) {
-        printf();
+        printf("connect socket error: %s(errno：%d)\n", strerror(errno), errno);
         return 0;
     }
     
     printf("send msg to server: \n");
     fgets(sendline, 4096, stdin);
     if ( send(sockfd, sendline, strlen(sendline), 0) < 0) {
-        printf();
+        printf("send msg error: %s(errno：%d)\n", strerror(errno), errno);
         return 0;
     }
     
@@ -2002,7 +2018,7 @@ int main( int argc, char ** argv){
 	    	/*接受连接*/
 	    	struct sockaddr_in client_addr;
         	size_t size = sizeof(struct sockaddr_in);
-			int sock_client = accept(serverfd, (struct sockaddr*)(&client_addr),                                              (unsigned int*)(&size));
+			int sock_client = accept(serverfd, (struct sockaddr*)(&client_addr),                                                                                      (unsigned int*)(&size));
             if(sock_client < 0){
                 perror("accept error!\n");
                 continue;
@@ -2013,7 +2029,7 @@ int main( int argc, char ** argv){
                 bzero(buffer,1024);
                 strcpy(buffer, "this is server! welcome!\n");
                 send(sock_client, buffer, 1024, 0);
-                printf("new connection client[%d] %s:%d\n", conn_amount,                                        inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+                printf("new connection client[%d] %s:%d\n", conn_amount,                                                                                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
                 bzero(buffer,sizeof(buffer));
                 ret = recv(sock_client, buffer, 1024, 0);
                 if(ret < 0){
@@ -2737,4 +2753,8 @@ void modify_event(int epollfd,int fd,int state){
     - LT 模式下，只要这个 `fd` 还有数据可读，每次 `epoll_wait` 都会返回它的事件，提醒用户程序去操作；
     - ET（边缘触发）模式中，它只会提示一次，直到下次再有数据流入之前都不会再提示了，无论 `fd` 中是否还有数据可读。所以在 ET 模式下，读一个 `fd` 的时候一定要把它的 buffer 读光，也就是说一直读到 read 的返回值小于请求值;
     - 如果采用 LT 模式的话，系统中一旦有大量你不需要读写的就绪文件描述符，它们每次调 `epoll_wait` 都会返回，这样会大大降低处理程序检索自己关心的就绪文件描述符的效率；而 ET 模式下，系统不会充斥大量你不关心的就绪文件描述符；
+
+### epoll 各类问题链接
+
+[epoll 类问题](https://zhuanlan.zhihu.com/p/378176093)
 
