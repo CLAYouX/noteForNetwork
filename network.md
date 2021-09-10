@@ -495,7 +495,7 @@ TCP 协议的通信双⽅， 都必须维护⼀个「序列号」， 序列号�
 
 - **增大半连接队列**：要想增⼤半连接队列，不能只单纯增⼤ `tcp_max_syn_backlog` 的值，还需⼀同增⼤ `somaxconn` 和 `backlog`，也就是 **增⼤全连接队列**
 - 超出处理能力，对新的 `SYN` 直接回 `RST`，丢弃连接：`net.ipv4.tcp_abort_on_overflow`。
-- 通常情况下，应当把 `tcp_abort_on_overflow` 设置为 0，因为这样更有利于应对突发流量。举个例⼦，当 TCP 全连接队列满导致服务器丢掉了 ACK，与此同时，客户端的连接状态却是 `ESTABLISHED`，进程就在建⽴好的连接上发送请求。只要服务器没有为请求回复 ACK，请求就会被多次重发。如果服务器上的进程只是短暂的繁忙造成 accept 队列满，那么当 TCP 全连接队列有空位时，再次接收到的请求报⽂由于含有 ACK，仍然会触发服务器端成功建⽴连接。`tcp_abort_on_overflow` 设为 0 可以提⾼连接建⽴的成功率，只有你⾮常肯定 TCP 全连接队列会⻓期溢出时，才能设置为 1 以尽快通知客户端。
+- 通常情况下，应当把 `tcp_abort_on_overflow` 设置为 0，因为这样更 **有利于应对突发流量**。举个例⼦，当 TCP 全连接队列满导致服务器丢掉了 ACK，与此同时，客户端的连接状态却是 `ESTABLISHED`，进程就在建⽴好的连接上发送请求。只要服务器没有为请求回复 ACK，请求就会被多次重发。如果服务器上的进程只是短暂的繁忙造成 accept 队列满，那么当 TCP 全连接队列有空位时，再次接收到的请求报⽂由于含有 ACK，仍然会触发服务器端成功建⽴连接。`tcp_abort_on_overflow` 设为 0 可以提⾼连接建⽴的成功率，只有你⾮常肯定 TCP 全连接队列会⻓期溢出时，才能设置为 1 以尽快通知客户端。
 
 ###### 避免方式二
 
@@ -1311,6 +1311,7 @@ cat /proc/sys/net/ipv4/tcp_fin_timeout
 - 如果第四次挥手的 ACK 报文没有到达服务端，服务端就会重发 FIN 报文，重发次数仍然由前面介绍过的 `tcp_orphan_retries` 参数控制。
 - 如果要想知道客户端连接不上服务端，是不是服务端 TCP 全连接队列满的原因，那么可以把 `tcp_abort_on_overflow` 设置为 1，这时如果在客户端异常中可以看到很多 ==connection reset by peer== 的错误，那么就可以证明是由于服务端 TCP 全连接队列溢出的问题：
   - 0 ：如果全连接队列满了，那么 server 扔掉 client 发过来的 ack ；
+  - 1 ：如果全连接队列满了，server 发送⼀个 ==RST== 包给 client，表示废掉这个握⼿过程和这个连接；
 
 ``` shell
 cat /proc/sys/net/ipv4/tcp_abort_on_overflow
@@ -1321,6 +1322,15 @@ cat /proc/sys/net/ipv4/tcp_abort_on_overflow
 - TCP 全连接队列的最大值是 `sk_max_ack_backlog` 变量，取决于 `somaxconn` 和 `backlog` 之间的最小值
   - `somaxconn` 是 Linux 内核的参数，默认值是 128，可以通过`/proc/sys/net/core/somaxconn` 来设置其值；
   - `backlog` 是 `listen(int sockfd, int backlog)` 函数中的 backlog ⼤⼩，Nginx 默认值是 511，可以通过修改配置⽂件设置其⻓度；
+- 半连接队列的最大值并不是单由 `max_syn_backlog` 决定，还跟 `somaxconn` 和 `backlog` 有关系：
+  - 当 $max\_syn\_backlog > min(somaxconn, backlog)$ 时， 半连接队列最⼤值 $max\_qlen\_log = min(somaxconn, backlog) * 2；$
+  - 当 $max\_syn\_backlog < min(somaxconn, backlog)$ 时， 半连接队列最⼤值 $max\_qlen\_log = max\_syn\_backlog * 2$；
+
+#### TCP 第一次握手时会被丢弃的三种条件：
+
+- 如果半连接队列满了，并且没有开启 `tcp_syncookies`，则会丢弃；
+- 若全连接队列满了，且没有重传 `SYN+ACK` 包的连接请求多于 1 个，则会丢弃；
+- 如果没有开启 `tcp_syncookies`，并且 `tcp_max_syn_backlog` 减去当前半连接队列⻓度⼩于 $(tcp\_max\_syn\_backlog >> 2)$，则会丢弃；
 
 ### 3.8、TCP 三次握手性能提升
 
